@@ -1,0 +1,10 @@
+name: VtkFlutterBindings
+description: Generated bindings for the vtk_flutter native ABI.
+output: lib/src/ffi/vtk_flutter_bindings.g.dart
+headers:
+  entry-points:
+    - native/include/vtk_flutter.h
+  include-directives:
+    - native/include/vtk_flutter.h
+compiler-opts:
+  - -Inative/include

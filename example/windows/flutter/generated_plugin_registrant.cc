@@ -1,0 +1,14 @@
+//
+//  Generated file. Do not edit.
+//
+
+// clang-format off
+
+#include "generated_plugin_registrant.h"
+
+#include <vtk_flutter/vtk_flutter_plugin_c_api.h>
+
+void RegisterPlugins(flutter::PluginRegistry* registry) {
+  VtkFlutterPluginCApiRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("VtkFlutterPluginCApi"));
+}

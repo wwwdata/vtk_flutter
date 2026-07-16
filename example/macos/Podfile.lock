@@ -1,0 +1,22 @@
+PODS:
+  - FlutterMacOS (1.0.0)
+  - vtk_flutter (0.1.0-dev.1):
+    - FlutterMacOS
+
+DEPENDENCIES:
+  - FlutterMacOS (from `Flutter/ephemeral`)
+  - vtk_flutter (from `Flutter/ephemeral/.symlinks/plugins/vtk_flutter/macos`)
+
+EXTERNAL SOURCES:
+  FlutterMacOS:
+    :path: Flutter/ephemeral
+  vtk_flutter:
+    :path: Flutter/ephemeral/.symlinks/plugins/vtk_flutter/macos
+
+SPEC CHECKSUMS:
+  FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
+  vtk_flutter: 10d865b6dbbcbfda146a0f733653d7465f2e349c
+
+PODFILE CHECKSUM: 346bfb2deb41d4a6ebd6f6799f92188bde2d246f
+
+COCOAPODS: 1.17.0
