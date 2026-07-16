@@ -339,7 +339,7 @@ jobs:
       - name: Configure local Windows artifact
         shell: pwsh
         run: |
-          $artifact = (Resolve-Path '.dart_tool/consumer/windows/vtk_flutter_core.dll').Path.Replace('\', '/')
+          $artifact = '../.dart_tool/consumer/windows/vtk_flutter_core.dll'
           $pubspec = Get-Content 'example/pubspec.yaml' -Raw
           $hook = "hooks:`n  user_defines:`n    vtk_flutter:`n      native_artifact: '$artifact'`n`n"
           $pubspec.Replace('environment:', "${hook}environment:") |
@@ -349,4 +349,4 @@ jobs:
         working-directory: example
         run: |
           flutter pub get
-          flutter build windows --debug --verbose
+          flutter build windows --debug
