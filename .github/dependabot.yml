@@ -1,0 +1,98 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - github-actions
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: pub
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:15"
+      timezone: Europe/Berlin
+    groups:
+      dart-dependencies:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - dart
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: pub
+    directory: /example
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:30"
+      timezone: Europe/Berlin
+    groups:
+      example-dart-dependencies:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - dart
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:45"
+      timezone: Europe/Berlin
+    groups:
+      web-dependencies:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - javascript
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: gradle
+    directory: /android
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Europe/Berlin
+    groups:
+      android-dependencies:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - android
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: gradle
+    directory: /example/android
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:15"
+      timezone: Europe/Berlin
+    groups:
+      example-android-dependencies:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - android
+    open-pull-requests-limit: 5

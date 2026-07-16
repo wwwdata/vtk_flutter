@@ -1,0 +1,283 @@
+name: Release native libraries
+
+on:
+  push:
+    tags:
+      - native-v0.1.0-dev.1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: 3.44.6
+  NATIVE_RELEASE_TAG: native-v0.1.0-dev.1
+  VTK_VERSION: 9.5.2
+  VTK_SOURCE_URL: https://vtk.org/files/release/9.5/VTK-9.5.2.tar.gz
+  VTK_SOURCE_SHA256: cee64b98d270ff7302daf1ef13458dff5d5ac1ecb45d47723835f7f7d562c989
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            runner: macos-15
+            library: libvtk_flutter_core.dylib
+            run_host_tests: true
+          - target: macos-x64
+            runner: macos-15-intel
+            library: libvtk_flutter_core.dylib
+            run_host_tests: true
+          - target: ios-arm64
+            runner: macos-15
+            library: libvtk_flutter_core.dylib
+            run_host_tests: false
+          - target: ios-simulator-arm64
+            runner: macos-15
+            library: libvtk_flutter_core.dylib
+            run_host_tests: false
+          - target: ios-simulator-x64
+            runner: macos-15-intel
+            library: libvtk_flutter_core.dylib
+            run_host_tests: false
+          - target: android-arm64
+            runner: ubuntu-24.04
+            library: libvtk_flutter_core.so
+            run_host_tests: false
+          - target: android-armeabi-v7a
+            runner: ubuntu-24.04
+            library: libvtk_flutter_core.so
+            run_host_tests: false
+          - target: android-x86_64
+            runner: ubuntu-24.04
+            library: libvtk_flutter_core.so
+            run_host_tests: false
+          - target: windows-x64
+            runner: windows-2025
+            library: vtk_flutter_core.dll
+            run_host_tests: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify release ref and artifact contract
+        shell: bash
+        run: |
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_REF_NAME" = "$NATIVE_RELEASE_TAG"
+          grep -F "const nativeReleaseTag = '$NATIVE_RELEASE_TAG';" tool/native_artifacts.dart
+          grep -F "'${{ matrix.target }}': 'vtk_flutter-native-${{ matrix.target }}.zip'" tool/native_artifacts.dart
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+          pub-cache: true
+
+      - name: Install Android NDK
+        if: startsWith(matrix.target, 'android-')
+        shell: bash
+        run: |
+          sdkmanager "ndk;28.2.13676358"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      - name: Install Dart dependencies
+        run: flutter pub get
+
+      # Release libraries intentionally do not restore compiled VTK caches.
+      # Every dynamic library is rebuilt from the pinned upstream source.
+      - name: Bootstrap VTK
+        run: dart run tool/bootstrap_vtk.dart --platform ${{ matrix.target }}
+
+      - name: Build and package monolithic dynamic library
+        shell: pwsh
+        env:
+          RUN_HOST_TESTS: ${{ matrix.run_host_tests }}
+        run: |
+          $archive = Join-Path $PWD 'release/vtk_flutter-native-${{ matrix.target }}.zip'
+          $parameters = @{
+            Target = '${{ matrix.target }}'
+            OutputDirectory = '.dart_tool/native-release/${{ matrix.target }}'
+            ArchivePath = $archive
+          }
+          if ($env:RUN_HOST_TESTS -eq 'true') {
+            $parameters.RunHostTests = $true
+          }
+          & .github/scripts/build-native-artifact.ps1 @parameters
+
+          $entries = @(& cmake -E tar tf $archive)
+          if ($LASTEXITCODE -ne 0 -or $entries.Count -ne 1 -or $entries[0] -ne '${{ matrix.library }}') {
+            throw "Archive must contain only ${{ matrix.library }} at its root; found: $entries"
+          }
+
+      - name: Create build manifest
+        shell: pwsh
+        run: |
+          $target = '${{ matrix.target }}'
+          $name = "vtk_flutter-native-$target.zip"
+          $archive = Join-Path $PWD "release/$name"
+          $archiveHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $flutter = flutter --version --machine | ConvertFrom-Json
+          $cmake = (cmake --version | Select-Object -First 1).Trim()
+          $manifest = [ordered]@{
+            schemaVersion = 1
+            artifact = [ordered]@{
+              name = $name
+              library = '${{ matrix.library }}'
+              sha256 = $archiveHash
+              size = (Get-Item $archive).Length
+            }
+            package = 'vtk_flutter'
+            nativeReleaseTag = $env:NATIVE_RELEASE_TAG
+            target = $target
+            vtk = [ordered]@{
+              version = $env:VTK_VERSION
+              sourceUrl = $env:VTK_SOURCE_URL
+              sourceSha256 = $env:VTK_SOURCE_SHA256
+            }
+            build = [ordered]@{
+              repository = $env:GITHUB_REPOSITORY
+              commit = $env:GITHUB_SHA
+              workflow = $env:GITHUB_WORKFLOW
+              runId = $env:GITHUB_RUN_ID
+              runAttempt = $env:GITHUB_RUN_ATTEMPT
+              runnerOS = $env:RUNNER_OS
+              runnerArchitecture = $env:RUNNER_ARCH
+              runnerImageOS = $env:ImageOS
+              runnerImageVersion = $env:ImageVersion
+              flutterVersion = $flutter.frameworkVersion
+              cmakeVersion = $cmake
+              generatedAt = (Get-Date).ToUniversalTime().ToString('o')
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 6 |
+            Set-Content "release/$target.manifest.json" -Encoding utf8NoBOM
+
+      - name: Upload immutable workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-${{ matrix.target }}
+          path: release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    name: Publish immutable GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: native-release
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Download native libraries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: native-*
+          path: release
+          merge-multiple: true
+
+      - name: Create aggregate build manifest and checksums
+        shell: pwsh
+        run: |
+          $archives = @(Get-ChildItem release -File -Filter 'vtk_flutter-native-*.zip' | Sort-Object Name)
+          $manifests = @(Get-ChildItem release -File -Filter '*.manifest.json' | Sort-Object Name)
+          if ($archives.Count -ne 9 -or $manifests.Count -ne 9) {
+            throw "Expected nine archives and nine manifests; found $($archives.Count) and $($manifests.Count)."
+          }
+
+          $aggregate = [ordered]@{
+            schemaVersion = 1
+            release = $env:NATIVE_RELEASE_TAG
+            repository = $env:GITHUB_REPOSITORY
+            commit = $env:GITHUB_SHA
+            generatedAt = (Get-Date).ToUniversalTime().ToString('o')
+            artifacts = @($manifests | ForEach-Object {
+              Get-Content $_.FullName -Raw | ConvertFrom-Json
+            })
+          }
+          $aggregate | ConvertTo-Json -Depth 8 |
+            Set-Content release/BUILD-MANIFESTS.json -Encoding utf8NoBOM
+          Remove-Item $manifests.FullName
+
+          $checksumFiles = @(Get-ChildItem release -File | Sort-Object Name)
+          $lines = $checksumFiles | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          $lines | Set-Content release/SHA256SUMS -Encoding utf8NoBOM
+
+      - name: Attest release assets
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: release/*
+
+      - name: Check release preconditions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMMUTABLE_RELEASES_ENABLED: ${{ vars.IMMUTABLE_RELEASES_ENABLED }}
+        shell: bash
+        run: |
+          if [[ "$IMMUTABLE_RELEASES_ENABLED" != "true" ]]; then
+            echo "Set IMMUTABLE_RELEASES_ENABLED=true only after enabling immutable releases in repository settings." >&2
+            exit 1
+          fi
+          if gh release view "$NATIVE_RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $NATIVE_RELEASE_TAG already exists; refusing to replace it." >&2
+            exit 1
+          fi
+
+      - name: Draft release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Monolithic vtk_flutter dynamic libraries for $NATIVE_RELEASE_TAG.
+
+          Every target ZIP contains exactly one vtk_flutter core library. Verify
+          downloads against SHA256SUMS and the GitHub artifact attestations.
+          BUILD-MANIFESTS.json records the source, toolchain, and build identity.
+
+          See docs/releasing.md in the tagged source for target details.
+          EOF
+          gh release create "$NATIVE_RELEASE_TAG" \
+            --draft \
+            --latest=false \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --title "$NATIVE_RELEASE_TAG" \
+            --verify-tag
+          gh release upload "$NATIVE_RELEASE_TAG" release/*
+
+      - name: Publish and verify immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release edit "$NATIVE_RELEASE_TAG" --draft=false --latest=false
+          test "$(gh release view "$NATIVE_RELEASE_TAG" --json isImmutable --jq .isImmutable)" = "true"
+
+          for attempt in {1..6}; do
+            if gh release verify "$NATIVE_RELEASE_TAG"; then
+              exit 0
+            fi
+            if [[ $attempt -lt 6 ]]; then sleep 10; fi
+          done
+          echo "The immutable release attestation was not verifiable after 60 seconds." >&2
+          exit 1
