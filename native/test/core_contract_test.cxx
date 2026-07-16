@@ -1,3 +1,4 @@
+#include "c_contract_support.h"
 #include "session.h"
 #include "volume_pipeline.h"
 #include "vtk_flutter.h"
@@ -69,6 +70,37 @@ public:
   vtk_flutter::PreparedView captured_view;
   VtkFlutterViewport captured_viewport{};
 };
+
+class ThrowingRenderTarget final : public vtk_flutter::RenderTarget {
+public:
+  void Render(vtk_flutter::PreparedView, const VtkFlutterViewport &,
+              VtkFlutterMetrics &) override {
+    throw std::runtime_error("render target failure");
+  }
+};
+
+struct ReentrantCallbackContext {
+  const VtkFlutterCoreApiV2 *api = nullptr;
+  VtkFlutterSession *session = nullptr;
+  VtkFlutterTextureTarget *target = nullptr;
+  int32_t reentrant_result = VTK_FLUTTER_STATUS_OK;
+};
+
+int32_t VTK_FLUTTER_CALL ReentrantBeginFrame(
+    void *user_data, const VtkFlutterViewport *, VtkFlutterStatus *) {
+  auto &context = *static_cast<ReentrantCallbackContext *>(user_data);
+  VtkFlutterStatus nested_status{};
+  context.reentrant_result = context.api->session_detach_texture_target(
+      context.session, context.target, &nested_status);
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+int32_t VTK_FLUTTER_CALL ReentrantEndFrame(
+    void *, const VtkFlutterMetrics *, VtkFlutterStatus *) {
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+void VTK_FLUTTER_CALL ReentrantCancelFrame(void *) {}
 } // namespace
 
 int main() {
@@ -81,6 +113,13 @@ int main() {
   try {
     Require(vtk_flutter_abi_version() == 1U,
             "C interface reported the wrong ABI version");
+    Require(vtk_flutter_public_header_is_c_compatible() == 0,
+            "ABI v2 public header contract failed");
+    const auto *core_api = vtk_flutter_get_core_api_v2();
+    Require(core_api != nullptr &&
+                core_api->version == VTK_FLUTTER_CORE_API_VERSION_2 &&
+                core_api->struct_size >= sizeof(VtkFlutterCoreApiV2),
+            "ABI v2 core table is unavailable");
     VtkFlutterStatus status{};
     VtkFlutterSession *c_session = nullptr;
     Require(vtk_flutter_session_create(&c_session, &status) ==
@@ -204,6 +243,86 @@ int main() {
         vtk_flutter_session_render(c_session, &request, &metrics, &status) ==
             VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
         "core-created C session did not report its missing platform target");
+
+    VtkFlutterTestFrameRecorder recorder{};
+    auto callbacks = vtk_flutter_test_frame_callbacks_v2(&recorder);
+    auto v2_render_target = std::make_unique<RecordingRenderTarget>();
+    auto *v2_render_observer = v2_render_target.get();
+    VtkFlutterTextureTarget texture_target(std::move(v2_render_target),
+                                           &callbacks);
+    Require(core_api->session_attach_texture_target(c_session, &texture_target,
+                                                    &status) ==
+                VTK_FLUTTER_STATUS_OK,
+            "ABI v2 could not attach a texture target");
+    Require(core_api->session_render(c_session, &request, &metrics, &status) ==
+                    VTK_FLUTTER_STATUS_OK &&
+                recorder.begin_count == 1 && recorder.end_count == 1 &&
+                recorder.cancel_count == 0 &&
+                recorder.width == request.viewport.width &&
+                recorder.height == request.viewport.height &&
+                recorder.frame_bytes == metrics.frame_bytes &&
+                v2_render_observer->render_count == 1,
+            "ABI v2 did not synchronously bracket target rendering");
+
+    recorder.end_result = VTK_FLUTTER_STATUS_INTERNAL_ERROR;
+    Require(core_api->session_render(c_session, &request, &metrics, &status) ==
+                    VTK_FLUTTER_STATUS_INTERNAL_ERROR &&
+                recorder.cancel_count == 1 && metrics.frame_bytes == 0 &&
+                std::string(status.message) == "C end_frame failure",
+            "ABI v2 did not contain an end_frame failure");
+    recorder.end_result = VTK_FLUTTER_STATUS_OK;
+
+    ReentrantCallbackContext reentrant_context{core_api, c_session};
+    VtkFlutterFrameCallbacksV2 reentrant_callbacks{
+        sizeof(VtkFlutterFrameCallbacksV2),
+        VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2,
+        &reentrant_context,
+        ReentrantBeginFrame,
+        ReentrantEndFrame,
+        ReentrantCancelFrame,
+    };
+    auto reentrant_render_target = std::make_unique<RecordingRenderTarget>();
+    VtkFlutterTextureTarget reentrant_target(
+        std::move(reentrant_render_target), &reentrant_callbacks);
+    reentrant_context.target = &reentrant_target;
+    Require(core_api->session_detach_texture_target(c_session, &texture_target,
+                                                    &status) ==
+                VTK_FLUTTER_STATUS_OK,
+            "ABI v2 could not detach a texture target");
+    Require(core_api->session_attach_texture_target(c_session,
+                                                    &reentrant_target,
+                                                    &status) ==
+                VTK_FLUTTER_STATUS_OK,
+            "ABI v2 could not attach the reentrancy test target");
+    Require(core_api->session_render(c_session, &request, &metrics, &status) ==
+                    VTK_FLUTTER_STATUS_OK &&
+                reentrant_context.reentrant_result ==
+                    VTK_FLUTTER_STATUS_INVALID_STATE,
+            "ABI v2 did not reject same-session callback re-entry");
+    Require(core_api->session_detach_texture_target(c_session,
+                                                    &reentrant_target,
+                                                    &status) ==
+                VTK_FLUTTER_STATUS_OK,
+            "ABI v2 could not detach the reentrancy test target");
+
+    recorder = {};
+    callbacks = vtk_flutter_test_frame_callbacks_v2(&recorder);
+    VtkFlutterTextureTarget throwing_target(
+        std::make_unique<ThrowingRenderTarget>(), &callbacks);
+    Require(core_api->session_attach_texture_target(c_session, &throwing_target,
+                                                    &status) ==
+                VTK_FLUTTER_STATUS_OK,
+            "ABI v2 could not attach the throwing target");
+    Require(core_api->session_render(c_session, &request, &metrics, &status) ==
+                    VTK_FLUTTER_STATUS_INTERNAL_ERROR &&
+                recorder.begin_count == 1 && recorder.end_count == 0 &&
+                recorder.cancel_count == 1 && metrics.frame_bytes == 0,
+            "ABI v2 did not cancel and contain a render exception");
+    Require(core_api->session_detach_texture_target(c_session, &throwing_target,
+                                                    &status) ==
+                VTK_FLUTTER_STATUS_OK,
+            "ABI v2 could not detach the throwing target");
+
     vtk_flutter_session_destroy(c_session);
 
     auto target = std::make_unique<RecordingRenderTarget>();

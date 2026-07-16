@@ -27,6 +27,13 @@ int32_t TranslateErrors(VtkFlutterStatus *status, Action action) {
   try {
     action();
     return VTK_FLUTTER_STATUS_OK;
+  } catch (const vtk_flutter::FrameCallbackFailure &exception) {
+    const auto code = static_cast<VtkFlutterStatusCode>(exception.Code());
+    SetStatus(status, code, exception.what());
+    return exception.Code();
+  } catch (const vtk_flutter::InvalidState &exception) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE, exception.what());
+    return VTK_FLUTTER_STATUS_INVALID_STATE;
   } catch (const vtk_flutter::RenderTargetUnavailable &exception) {
     SetStatus(status, VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
               exception.what());
@@ -68,7 +75,11 @@ int32_t VTK_FLUTTER_CALL vtk_flutter_session_create(
 }
 
 void VTK_FLUTTER_CALL vtk_flutter_session_destroy(VtkFlutterSession *session) {
-  delete session;
+  try {
+    delete session;
+  } catch (...) {
+    // Destruction has no status channel in the legacy ABI. Never unwind into C.
+  }
 }
 
 int32_t VTK_FLUTTER_CALL vtk_flutter_validate_volume(
@@ -114,6 +125,57 @@ int32_t VTK_FLUTTER_CALL vtk_flutter_session_render(
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
   *metrics = {};
-  return TranslateErrors(status,
-                         [&] { session->value.Render(*request, *metrics); });
+  VtkFlutterMetrics rendered_metrics{};
+  const auto code = TranslateErrors(status, [&] {
+    session->value.Render(*request, rendered_metrics);
+  });
+  if (code == VTK_FLUTTER_STATUS_OK) {
+    *metrics = rendered_metrics;
+  }
+  return code;
+}
+
+namespace {
+int32_t VTK_FLUTTER_CALL SessionAttachTextureTargetV2(
+    VtkFlutterSession *session, VtkFlutterTextureTarget *target,
+    VtkFlutterStatus *status) {
+  if (session == nullptr || target == nullptr) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+              "session and target are required");
+    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
+  }
+  return TranslateErrors(
+      status, [&] { session->value.AttachTextureTarget(*target); });
+}
+
+int32_t VTK_FLUTTER_CALL SessionDetachTextureTargetV2(
+    VtkFlutterSession *session, VtkFlutterTextureTarget *target,
+    VtkFlutterStatus *status) {
+  if (session == nullptr || target == nullptr) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+              "session and target are required");
+    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
+  }
+  return TranslateErrors(
+      status, [&] { session->value.DetachTextureTarget(*target); });
+}
+
+const VtkFlutterCoreApiV2 kCoreApiV2 = {
+    sizeof(VtkFlutterCoreApiV2),
+    VTK_FLUTTER_CORE_API_VERSION_2,
+    vtk_flutter_status_clear,
+    vtk_flutter_session_create,
+    vtk_flutter_session_destroy,
+    vtk_flutter_validate_volume,
+    vtk_flutter_session_set_volume,
+    vtk_flutter_validate_render_request,
+    vtk_flutter_session_render,
+    SessionAttachTextureTargetV2,
+    SessionDetachTextureTargetV2,
+};
+} // namespace
+
+const VtkFlutterCoreApiV2 *VTK_FLUTTER_CALL
+vtk_flutter_get_core_api_v2(void) {
+  return &kCoreApiV2;
 }

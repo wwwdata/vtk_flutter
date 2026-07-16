@@ -3,7 +3,10 @@
 
 #include <stdint.h>
 
+// The legacy direct-export ABI remains version 1 during the v2 migration.
 #define VTK_FLUTTER_ABI_VERSION 1U
+#define VTK_FLUTTER_CORE_API_VERSION_2 2U
+#define VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2 2U
 #define VTK_FLUTTER_STATUS_MESSAGE_CAPACITY 256U
 
 #if defined(VTK_FLUTTER_STATIC)
@@ -29,6 +32,7 @@ extern "C" {
 #endif
 
 typedef struct VtkFlutterSession VtkFlutterSession;
+typedef struct VtkFlutterTextureTarget VtkFlutterTextureTarget;
 
 typedef enum VtkFlutterStatusCode {
   VTK_FLUTTER_STATUS_OK = 0,
@@ -98,7 +102,74 @@ typedef struct VtkFlutterMetrics {
   double patient_to_clip[16];
 } VtkFlutterMetrics;
 
+// A platform target supplies these callbacks when it creates its opaque
+// VtkFlutterTextureTarget. The core copies the table; the table itself need not
+// outlive target creation. user_data and everything it references must remain
+// valid until the target is detached and destroyed by its platform owner.
+//
+// begin_frame and end_frame return VtkFlutterStatusCode. They may fill status
+// with a bounded diagnostic. Once begin_frame returns OK, the core calls
+// exactly one of end_frame or cancel_frame before render returns. cancel_frame
+// is best-effort and must not throw or call back into the same session.
+typedef int32_t(VTK_FLUTTER_CALL *VtkFlutterBeginFrameCallbackV2)(
+    void *user_data, const VtkFlutterViewport *viewport,
+    VtkFlutterStatus *status);
+
+typedef int32_t(VTK_FLUTTER_CALL *VtkFlutterEndFrameCallbackV2)(
+    void *user_data, const VtkFlutterMetrics *metrics,
+    VtkFlutterStatus *status);
+
+typedef void(VTK_FLUTTER_CALL *VtkFlutterCancelFrameCallbackV2)(
+    void *user_data);
+
+typedef struct VtkFlutterFrameCallbacksV2 {
+  uint32_t struct_size;
+  uint32_t version;
+  void *user_data;
+  VtkFlutterBeginFrameCallbackV2 begin_frame;
+  VtkFlutterEndFrameCallbackV2 end_frame;
+  VtkFlutterCancelFrameCallbackV2 cancel_frame;
+} VtkFlutterFrameCallbacksV2;
+
+// ABI v2 is exposed as one immutable, process-lifetime function table. A
+// caller must check version and struct_size before reading function pointers.
+// Texture targets are platform-owned and borrowed by the session between a
+// successful attach and detach. The platform must detach a target before
+// destroying it. A target can be attached to at most one session at a time.
+//
+// All operations on one live session are synchronous and serialized. Calls
+// from different threads wait for the active operation. Re-entering that same
+// session from a frame callback fails with VTK_FLUTTER_STATUS_INVALID_STATE.
+// Session destruction must not race another operation or occur in a callback.
+typedef struct VtkFlutterCoreApiV2 {
+  uint32_t struct_size;
+  uint32_t version;
+  void(VTK_FLUTTER_CALL *status_clear)(VtkFlutterStatus *status);
+  int32_t(VTK_FLUTTER_CALL *session_create)(
+      VtkFlutterSession **out_session, VtkFlutterStatus *status);
+  void(VTK_FLUTTER_CALL *session_destroy)(VtkFlutterSession *session);
+  int32_t(VTK_FLUTTER_CALL *validate_volume)(
+      const VtkFlutterVolume *volume, VtkFlutterStatus *status);
+  int32_t(VTK_FLUTTER_CALL *session_set_volume)(
+      VtkFlutterSession *session, const VtkFlutterVolume *volume,
+      VtkFlutterStatus *status);
+  int32_t(VTK_FLUTTER_CALL *validate_render_request)(
+      const VtkFlutterRenderRequest *request, VtkFlutterStatus *status);
+  int32_t(VTK_FLUTTER_CALL *session_render)(
+      VtkFlutterSession *session, const VtkFlutterRenderRequest *request,
+      VtkFlutterMetrics *metrics, VtkFlutterStatus *status);
+  int32_t(VTK_FLUTTER_CALL *session_attach_texture_target)(
+      VtkFlutterSession *session, VtkFlutterTextureTarget *target,
+      VtkFlutterStatus *status);
+  int32_t(VTK_FLUTTER_CALL *session_detach_texture_target)(
+      VtkFlutterSession *session, VtkFlutterTextureTarget *target,
+      VtkFlutterStatus *status);
+} VtkFlutterCoreApiV2;
+
 VTK_FLUTTER_EXPORT uint32_t VTK_FLUTTER_CALL vtk_flutter_abi_version(void);
+
+VTK_FLUTTER_EXPORT const VtkFlutterCoreApiV2 *VTK_FLUTTER_CALL
+vtk_flutter_get_core_api_v2(void);
 
 VTK_FLUTTER_EXPORT void VTK_FLUTTER_CALL
 vtk_flutter_status_clear(VtkFlutterStatus *status);
