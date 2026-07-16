@@ -52,7 +52,7 @@ void main() {
   });
 
   test('maps capabilities and every session operation', () async {
-    final platform = MethodChannelVtkFlutter();
+    final platform = MethodChannelVtkFlutter(ffiTransport: _FakeFfiTransport());
     final volume = VtkVolume(
       data: Uint8List.fromList([0, 0, 1, 0, 255, 255, 2, 0]),
       dimensions: const [2, 2, 1],
@@ -100,7 +100,11 @@ void main() {
       'disposeSession',
     ]);
 
-    expect(calls[1].arguments, {'width': 640, 'height': 320});
+    expect(calls[1].arguments, {
+      'width': 640,
+      'height': 320,
+      'coreApiAddress': 4242,
+    });
     final volumeArguments = calls[2].arguments as Map<Object?, Object?>;
     expect(volumeArguments['voxels'], volume.data);
     expect(volumeArguments['width'], 2);
@@ -211,7 +215,9 @@ void main() {
         .setMockMethodCallHandler(channel, (call) async => {'textureId': -1});
 
     await expectLater(
-      MethodChannelVtkFlutter().createSession(VtkViewport(width: 1, height: 1)),
+      MethodChannelVtkFlutter(
+        ffiTransport: _FakeFfiTransport(),
+      ).createSession(VtkViewport(width: 1, height: 1)),
       throwsA(isA<VtkProtocolException>()),
     );
   });
@@ -260,6 +266,9 @@ const _statusMap = <String, Object>{
 };
 
 final class _FakeFfiTransport implements VtkFfiTransport {
+  @override
+  int get coreApiAddress => 4242;
+
   int? sessionAddress;
   int? textureId;
   VtkViewport? viewport;

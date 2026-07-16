@@ -31,9 +31,14 @@ final class MethodChannelVtkFlutter extends VtkFlutterPlatform {
 
   @override
   Future<int> createSession(VtkViewport viewport) async {
+    final coreApiAddress = _ffiTransport?.coreApiAddress;
     final values = await _invokeMap(
       method: 'createSession',
-      arguments: {'width': viewport.width, 'height': viewport.height},
+      arguments: {
+        'width': viewport.width,
+        'height': viewport.height,
+        'coreApiAddress': ?coreApiAddress,
+      },
     );
     final textureId = values.readInt('textureId');
     if (textureId < 0) {

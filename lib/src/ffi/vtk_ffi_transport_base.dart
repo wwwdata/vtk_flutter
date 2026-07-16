@@ -1,6 +1,8 @@
 import '../models.dart';
 
 abstract interface class VtkFfiTransport {
+  int get coreApiAddress;
+
   Future<void> setVolume({
     required int sessionAddress,
     required VtkVolume volume,

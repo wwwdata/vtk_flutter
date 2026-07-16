@@ -8,3 +8,5 @@ headers:
     - native/include/vtk_flutter.h
 compiler-opts:
   - -Inative/include
+ffi-native:
+  asset-id: package:vtk_flutter/vtk_flutter_core.dart

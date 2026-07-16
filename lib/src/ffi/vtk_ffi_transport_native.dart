@@ -1,5 +1,4 @@
 import 'dart:ffi';
-import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
@@ -11,7 +10,29 @@ import 'vtk_flutter_bindings.g.dart';
 VtkFfiTransport createDefaultVtkFfiTransport() => VtkNativeFfiTransport();
 
 final class VtkNativeFfiTransport implements VtkFfiTransport {
-  VtkFlutterBindings? _loadedBindings;
+  bool _validated = false;
+
+  @override
+  int get coreApiAddress {
+    _validateBindings();
+    final api = vtk_flutter_get_core_api_v2();
+    if (api == nullptr) {
+      throw const VtkPlatformException(
+        code: 'ffi_abi',
+        message: 'Native VTK returned no ABI v2 function table',
+      );
+    }
+    if (api.ref.version != VTK_FLUTTER_CORE_API_VERSION_2 ||
+        api.ref.struct_size < sizeOf<VtkFlutterCoreApiV2>()) {
+      throw VtkPlatformException(
+        code: 'ffi_abi',
+        message:
+            'Unsupported VTK core API ${api.ref.version} '
+            '(${api.ref.struct_size} bytes)',
+      );
+    }
+    return api.address;
+  }
 
   @override
   Future<void> setVolume({
@@ -33,7 +54,8 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
         nativeVolume.ref.index_to_patient[index] = volume.affine[index];
       }
 
-      final result = _bindings.vtk_flutter_session_set_volume(
+      _validateBindings();
+      final result = vtk_flutter_session_set_volume(
         Pointer<VtkFlutterSession>.fromAddress(sessionAddress),
         nativeVolume,
         status,
@@ -62,7 +84,8 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
         viewport: viewport,
         request: request,
       );
-      final result = _bindings.vtk_flutter_session_render(
+      _validateBindings();
+      final result = vtk_flutter_session_render(
         Pointer<VtkFlutterSession>.fromAddress(sessionAddress),
         nativeRequest,
         metrics,
@@ -77,12 +100,10 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
     }
   }
 
-  VtkFlutterBindings get _bindings {
-    final existing = _loadedBindings;
-    if (existing != null) return existing;
+  void _validateBindings() {
+    if (_validated) return;
     try {
-      final bindings = VtkFlutterBindings(_openLibrary());
-      final version = bindings.vtk_flutter_abi_version();
+      final version = vtk_flutter_abi_version();
       if (version != VTK_FLUTTER_ABI_VERSION) {
         throw VtkPlatformException(
           code: 'ffi_abi',
@@ -91,7 +112,7 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
               '$VTK_FLUTTER_ABI_VERSION',
         );
       }
-      return _loadedBindings = bindings;
+      _validated = true;
     } on VtkException {
       rethrow;
     } on Object catch (error) {
@@ -101,18 +122,6 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
       );
     }
   }
-}
-
-DynamicLibrary _openLibrary() {
-  if (Platform.isIOS || Platform.isMacOS) return DynamicLibrary.process();
-  if (Platform.isAndroid) return DynamicLibrary.open('libvtk_flutter.so');
-  if (Platform.isWindows) {
-    return DynamicLibrary.open('vtk_flutter_plugin.dll');
-  }
-  throw const VtkPlatformException(
-    code: 'ffi_unsupported',
-    message: 'Native VTK FFI is unsupported on this platform',
-  );
 }
 
 void _writeRequest({
