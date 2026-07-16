@@ -61,6 +61,25 @@ void main() {
     },
   );
 
+  test('honors the workspace development skip', () async {
+    final userDefines = PackageUserDefines(
+      workspacePubspec: PackageUserDefinesSource(
+        defines: {build_hook.skipNativeArtifactKey: true},
+        basePath: Directory.current.uri,
+      ),
+    );
+
+    await testCodeBuildHook(
+      mainMethod: build_hook.main,
+      targetOS: OS.macOS,
+      targetArchitecture: Architecture.arm64,
+      userDefines: userDefines,
+      check: (input, output) {
+        expect(output.assets.code, isEmpty);
+      },
+    );
+  });
+
   test(
     'fails unsupported architectures on declared native platforms',
     () async {

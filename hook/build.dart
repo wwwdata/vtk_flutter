@@ -9,6 +9,7 @@ import 'src/native_artifact_target.dart';
 
 const nativeArtifactOverrideKey = 'native_artifact';
 const nativeCodeAssetName = 'vtk_flutter_core.dart';
+const skipNativeArtifactKey = 'skip_native_artifact';
 
 Future<void> main(List<String> arguments) async {
   await build(arguments, runBuildHook);
@@ -16,6 +17,7 @@ Future<void> main(List<String> arguments) async {
 
 Future<void> runBuildHook(BuildInput input, BuildOutputBuilder output) async {
   if (!input.config.buildCodeAssets) return;
+  if (input.userDefines[skipNativeArtifactKey] == true) return;
 
   final codeConfig = input.config.code;
   if (codeConfig.targetOS == OS.linux) return;
