@@ -29,6 +29,15 @@ hooks:
       native_artifact: ../.dart_tool/native-shared-test/libvtk_flutter_core.dylib
 ```
 
+For a multi-architecture build, `native_artifact` can point to a directory with
+one library per target:
+
+```text
+native-artifacts/
+├── ios-simulator-arm64/libvtk_flutter_core.dylib
+└── ios-simulator-x64/libvtk_flutter_core.dylib
+```
+
 Do not commit that local override. Pull requests build real consumer examples
 with workflow-produced target libraries on macOS, iOS Simulator, Android x64,
 and Windows x64.

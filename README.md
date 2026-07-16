@@ -50,7 +50,9 @@ The example becomes a normal zero-setup consumer after the corresponding
 native GitHub Release exists. Before that release, maintainers can set
 `hooks.user_defines.vtk_flutter.native_artifact` in the example application's
 `pubspec.yaml` to a locally built library; the build-hook tests cover this
-override explicitly.
+override explicitly. Multi-architecture builds can instead point it at a
+directory containing `<target>/libvtk_flutter_core.*` for each requested
+target, such as `ios-simulator-arm64` and `ios-simulator-x64`.
 
 ## Public API
 

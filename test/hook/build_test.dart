@@ -48,6 +48,56 @@ void main() {
   });
 
   test(
+    'selects the requested target from a local artifact directory',
+    () async {
+      final temporaryDirectory = await Directory.systemTemp.createTemp(
+        'vtk-build-hook-target-directory-test-',
+      );
+      addTearDown(() => temporaryDirectory.delete(recursive: true));
+      final artifactDirectory = Directory(
+        '${temporaryDirectory.path}${Platform.pathSeparator}artifacts',
+      );
+      for (final target in ['ios-simulator-arm64', 'ios-simulator-x64']) {
+        final targetDirectory = Directory(
+          '${artifactDirectory.path}${Platform.pathSeparator}$target',
+        );
+        await targetDirectory.create(recursive: true);
+        await File(
+          '${targetDirectory.path}${Platform.pathSeparator}'
+          'libvtk_flutter_core.dylib',
+        ).writeAsString(target);
+      }
+      final userDefines = PackageUserDefines(
+        workspacePubspec: PackageUserDefinesSource(
+          defines: {
+            build_hook.nativeArtifactOverrideKey: artifactDirectory.path,
+          },
+          basePath: temporaryDirectory.uri,
+        ),
+      );
+
+      for (final architecture in [Architecture.arm64, Architecture.x64]) {
+        await testCodeBuildHook(
+          mainMethod: build_hook.main,
+          targetOS: OS.iOS,
+          targetArchitecture: architecture,
+          targetIOSSdk: IOSSdk.iPhoneSimulator,
+          userDefines: userDefines,
+          check: (input, output) async {
+            final file = output.assets.code.single.file;
+            expect(file, isNotNull);
+            if (file == null) return;
+            expect(
+              await File.fromUri(file).readAsString(),
+              'ios-simulator-${architecture.name}',
+            );
+          },
+        );
+      }
+    },
+  );
+
+  test(
     'skips Linux portable analysis without downloading an artifact',
     () async {
       await testCodeBuildHook(

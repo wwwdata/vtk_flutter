@@ -65,9 +65,16 @@ Future<File> _installLocalArtifact({
   required NativeArtifactTarget target,
   required Directory outputDirectory,
 }) async {
-  output.dependencies.add(uri);
+  final directory = Directory.fromUri(uri);
+  final source = await directory.exists()
+      ? File(
+          '${directory.path}${Platform.pathSeparator}${target.key}'
+          '${Platform.pathSeparator}${target.libraryFileName}',
+        )
+      : File.fromUri(uri);
+  output.dependencies.add(source.uri);
   return installer.installLocal(
-    source: File.fromUri(uri),
+    source: source,
     target: target,
     outputDirectory: outputDirectory,
   );
