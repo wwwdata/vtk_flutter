@@ -47,6 +47,13 @@ jobs:
           cache-dependency-path: web/package-lock.json
           package-manager-cache: false
 
+      - name: Validate PowerShell scripts
+        shell: pwsh
+        run: |
+          [scriptblock]::Create(
+            (Get-Content '.github/scripts/build-native-artifact.ps1' -Raw)
+          ) | Out-Null
+
       - name: Install Dart dependencies
         run: |
           flutter pub get

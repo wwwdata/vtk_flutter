@@ -30,7 +30,7 @@ function Invoke-CMake {
 
   & cmake @CommandArguments
   if ($LASTEXITCODE -ne 0) {
-    throw "cmake failed with exit code $LASTEXITCODE: $($CommandArguments -join ' ')"
+    throw "cmake failed with exit code ${LASTEXITCODE}: $($CommandArguments -join ' ')"
   }
 }
 
