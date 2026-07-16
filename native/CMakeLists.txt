@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.25)
 
 project(vtk_flutter_native LANGUAGES C CXX)
 
+option(
+  VTK_FLUTTER_BUILD_SHARED_CORE
+  "Build the monolithic VTK-backed core as a dynamic code asset"
+  OFF
+)
+
 function(vtk_flutter_enable_warnings target)
   if(MSVC)
     target_compile_options(${target} PRIVATE /W4 /permissive-)
@@ -22,9 +28,15 @@ find_package(
     RenderingVolumeOpenGL2
 )
 
+if(VTK_FLUTTER_BUILD_SHARED_CORE)
+  set(VTK_FLUTTER_CORE_LIBRARY_TYPE SHARED)
+else()
+  set(VTK_FLUTTER_CORE_LIBRARY_TYPE STATIC)
+endif()
+
 add_library(
   vtk_flutter_core
-  STATIC
+  ${VTK_FLUTTER_CORE_LIBRARY_TYPE}
     include/vtk_flutter.h
     src/render_target.h
     src/session.cxx
@@ -36,18 +48,42 @@ add_library(
 target_compile_features(vtk_flutter_core PUBLIC cxx_std_20)
 target_compile_definitions(
   vtk_flutter_core
-  PUBLIC VTK_FLUTTER_STATIC
   PRIVATE VTK_FLUTTER_BUILDING_LIBRARY
 )
+if(NOT VTK_FLUTTER_BUILD_SHARED_CORE)
+  target_compile_definitions(vtk_flutter_core PUBLIC VTK_FLUTTER_STATIC)
+endif()
 target_include_directories(
   vtk_flutter_core
   PUBLIC include
   PRIVATE src
 )
 target_link_libraries(vtk_flutter_core PUBLIC ${VTK_LIBRARIES})
-set_target_properties(vtk_flutter_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+set_target_properties(
+  vtk_flutter_core
+  PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    OUTPUT_NAME vtk_flutter_core
+)
+if(VTK_FLUTTER_BUILD_SHARED_CORE AND NOT BUILD_TESTING)
+  set_target_properties(
+    vtk_flutter_core
+    PROPERTIES
+      CXX_VISIBILITY_PRESET hidden
+      VISIBILITY_INLINES_HIDDEN ON
+  )
+endif()
 vtk_flutter_enable_warnings(vtk_flutter_core)
 vtk_module_autoinit(TARGETS vtk_flutter_core MODULES ${VTK_LIBRARIES})
+
+include(GNUInstallDirs)
+install(
+  TARGETS vtk_flutter_core
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+install(FILES include/vtk_flutter.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 include(CTest)
 if(BUILD_TESTING)
