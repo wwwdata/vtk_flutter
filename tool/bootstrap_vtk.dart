@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 const vtkVersion = '9.5.2';
+const vtkBuildParallelJobs = '2';
 const vtkArchiveSha256 =
     'cee64b98d270ff7302daf1ef13458dff5d5ac1ecb45d47723835f7f7d562c989';
 const vtkArchiveUrl =
@@ -255,6 +256,7 @@ List<CmakeCommand> createBuildPlan({
         '--config',
         'Release',
         '--parallel',
+        vtkBuildParallelJobs,
       ],
     ),
   );

@@ -162,6 +162,10 @@ void main() {
       expect(plan, hasLength(3));
       expect(plan.first.arguments, containsAllInOrder(['-A', 'x64']));
       expect(plan[1].arguments.first, '--build');
+      expect(
+        plan[1].arguments,
+        containsAllInOrder(['--parallel', vtkBuildParallelJobs]),
+      );
       expect(plan[2].arguments.first, '--install');
     });
   });
