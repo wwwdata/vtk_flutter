@@ -17,6 +17,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # VTK's template-heavy build can exhaust standard hosted runners when CMake
+  # uses the native build tool's unbounded default parallelism.
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
   FLUTTER_VERSION: 3.44.6
   VTK_VERSION: 9.5.2
 
