@@ -38,6 +38,7 @@ add_library(
   vtk_flutter_core
   ${VTK_FLUTTER_CORE_LIBRARY_TYPE}
     include/vtk_flutter.h
+    src/callback_render_target.cxx
     src/render_target.h
     src/session.cxx
     src/session.h

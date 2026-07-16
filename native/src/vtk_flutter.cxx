@@ -160,6 +160,34 @@ int32_t VTK_FLUTTER_CALL SessionDetachTextureTargetV2(
       status, [&] { session->value.DetachTextureTarget(*target); });
 }
 
+int32_t VTK_FLUTTER_CALL TextureTargetCreateV2(
+    const VtkFlutterFrameCallbacksV2 *callbacks,
+    VtkFlutterTextureTarget **out_target, VtkFlutterStatus *status) {
+  if (callbacks == nullptr || out_target == nullptr) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+              "callbacks and out_target are required");
+    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
+  }
+  *out_target = nullptr;
+  return TranslateErrors(status, [&] {
+    auto target = std::make_unique<VtkFlutterTextureTarget>(*callbacks);
+    *out_target = target.release();
+  });
+}
+
+int32_t VTK_FLUTTER_CALL TextureTargetDestroyV2(
+    VtkFlutterTextureTarget *target, VtkFlutterStatus *status) {
+  if (target == nullptr) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+              "target is required");
+    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
+  }
+  return TranslateErrors(status, [&] {
+    target->MarkDestroying();
+    delete target;
+  });
+}
+
 const VtkFlutterCoreApiV2 kCoreApiV2 = {
     sizeof(VtkFlutterCoreApiV2),
     VTK_FLUTTER_CORE_API_VERSION_2,
@@ -172,6 +200,8 @@ const VtkFlutterCoreApiV2 kCoreApiV2 = {
     vtk_flutter_session_render,
     SessionAttachTextureTargetV2,
     SessionDetachTextureTargetV2,
+    TextureTargetCreateV2,
+    TextureTargetDestroyV2,
 };
 } // namespace
 

@@ -7,17 +7,28 @@ _Static_assert(VTK_FLUTTER_CORE_API_VERSION_2 == 2U,
                "unexpected core API version");
 _Static_assert(VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2 == 2U,
                "unexpected frame callback version");
+_Static_assert(VTK_FLUTTER_CPU_FRAME_VERSION_2 == 2U,
+               "unexpected CPU frame version");
 _Static_assert(VTK_FLUTTER_RENDER_OBLIQUE_MPR == 1,
                "unexpected oblique mode value");
 _Static_assert(VTK_FLUTTER_RENDER_VOLUME_3D == 2,
                "unexpected volume mode value");
 _Static_assert(VTK_FLUTTER_RENDER_VOLUME_LOCATOR == 3,
                "unexpected locator mode value");
+_Static_assert(VTK_FLUTTER_PIXEL_FORMAT_RGBA8888 == 1,
+               "unexpected RGBA format value");
+_Static_assert(VTK_FLUTTER_PIXEL_FORMAT_BGRA8888 == 2,
+               "unexpected BGRA format value");
 _Static_assert(offsetof(VtkFlutterCoreApiV2, version) == sizeof(uint32_t),
                "core API prefix is not stable");
 _Static_assert(offsetof(VtkFlutterFrameCallbacksV2, version) ==
                    sizeof(uint32_t),
                "callback table prefix is not stable");
+_Static_assert(offsetof(VtkFlutterCpuFrameV2, version) == sizeof(uint32_t),
+               "CPU frame prefix is not stable");
+_Static_assert(sizeof(((VtkFlutterCpuFrameV2 *)0)->pixel_format) ==
+                   sizeof(int32_t),
+               "CPU frame pixel format is not fixed-width");
 
 static void set_callback_failure(VtkFlutterStatus *status, int32_t code,
                                  const char *message) {
@@ -36,7 +47,7 @@ static void set_callback_failure(VtkFlutterStatus *status, int32_t code,
 
 static int32_t VTK_FLUTTER_CALL begin_frame(
     void *user_data, const VtkFlutterViewport *viewport,
-    VtkFlutterStatus *status) {
+    VtkFlutterCpuFrameV2 *frame, VtkFlutterStatus *status) {
   VtkFlutterTestFrameRecorder *recorder =
       (VtkFlutterTestFrameRecorder *)user_data;
   ++recorder->begin_count;
@@ -45,8 +56,15 @@ static int32_t VTK_FLUTTER_CALL begin_frame(
   if (recorder->begin_result != VTK_FLUTTER_STATUS_OK) {
     set_callback_failure(status, recorder->begin_result,
                          "C begin_frame failure");
+    return recorder->begin_result;
   }
-  return recorder->begin_result;
+  frame->struct_size = sizeof(*frame);
+  frame->version = VTK_FLUTTER_CPU_FRAME_VERSION_2;
+  frame->pixels = recorder->pixels;
+  frame->capacity_bytes = recorder->capacity_bytes;
+  frame->row_bytes = recorder->row_bytes;
+  frame->pixel_format = recorder->pixel_format;
+  return VTK_FLUTTER_STATUS_OK;
 }
 
 static int32_t VTK_FLUTTER_CALL end_frame(
@@ -56,6 +74,7 @@ static int32_t VTK_FLUTTER_CALL end_frame(
       (VtkFlutterTestFrameRecorder *)user_data;
   ++recorder->end_count;
   recorder->frame_bytes = metrics->frame_bytes;
+  recorder->surface_allocation_bytes = metrics->surface_allocation_bytes;
   if (recorder->end_result != VTK_FLUTTER_STATUS_OK) {
     set_callback_failure(status, recorder->end_result, "C end_frame failure");
   }
@@ -80,14 +99,32 @@ VtkFlutterFrameCallbacksV2 vtk_flutter_test_frame_callbacks_v2(
   return callbacks;
 }
 
+int32_t vtk_flutter_test_create_target_from_c(
+    const VtkFlutterCoreApiV2 *api, VtkFlutterTestFrameRecorder *recorder,
+    VtkFlutterTextureTarget **out_target, VtkFlutterStatus *status) {
+  VtkFlutterFrameCallbacksV2 callbacks =
+      vtk_flutter_test_frame_callbacks_v2(recorder);
+  return api->texture_target_create(&callbacks, out_target, status);
+}
+
+int32_t vtk_flutter_test_destroy_target_from_c(
+    const VtkFlutterCoreApiV2 *api, VtkFlutterTextureTarget *target,
+    VtkFlutterStatus *status) {
+  return api->texture_target_destroy(target, status);
+}
+
 int vtk_flutter_public_header_is_c_compatible(void) {
   VtkFlutterStatus status = {0};
   const VtkFlutterCoreApiV2 *api = vtk_flutter_get_core_api_v2();
   vtk_flutter_status_clear(&status);
   if (api == NULL || api->version != VTK_FLUTTER_CORE_API_VERSION_2 ||
       api->struct_size < sizeof(VtkFlutterCoreApiV2) ||
+      api->session_create == NULL || api->session_destroy == NULL ||
+      api->session_set_volume == NULL || api->session_render == NULL ||
       api->session_attach_texture_target == NULL ||
-      api->session_detach_texture_target == NULL) {
+      api->session_detach_texture_target == NULL ||
+      api->texture_target_create == NULL ||
+      api->texture_target_destroy == NULL) {
     return 1;
   }
   return status.code;
