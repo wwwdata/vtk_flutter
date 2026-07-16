@@ -1,11 +1,7 @@
 #include "vtk_flutter_plugin.h"
 
 #include "vtk_flutter_codec.h"
-#include "vtk_flutter_native_exports.h"
-#include "windows_vtk_render_target.h"
-
-#include <session.h>
-#include <vtk_flutter.h>
+#include "windows_frame_target.h"
 
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
@@ -22,8 +18,10 @@
 #include <functional>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -35,6 +33,9 @@ namespace vtk_flutter {
 namespace {
 
 constexpr char kChannelName[] = "vtk_flutter/session";
+constexpr char kGraphicsSupport[] =
+    "VTK code asset CPU RGBA readback (Windows)";
+constexpr char kHandoffMode[] = "windows_pixel_buffer_rgba_readback";
 constexpr UINT kDispatchMessage = WM_APP + 0x5654;
 
 using EncodableResult = flutter::MethodResult<flutter::EncodableValue>;
@@ -74,11 +75,29 @@ std::string StatusMessage(const char *operation,
                                    : std::string(status.message);
 }
 
+class CoreFailure final : public std::runtime_error {
+public:
+  CoreFailure(std::int32_t code, std::string message)
+      : std::runtime_error(std::move(message)), code_(code) {}
+
+  std::int32_t code() const noexcept { return code_; }
+
+private:
+  std::int32_t code_;
+};
+
+void RequireCoreSuccess(std::int32_t code, const VtkFlutterStatus &status,
+                        const char *operation) {
+  if (code != VTK_FLUTTER_STATUS_OK) {
+    throw CoreFailure(code, StatusMessage(operation, status));
+  }
+}
+
 struct PixelBufferLease {
   explicit PixelBufferLease(
       std::shared_ptr<const windows::PublishedFrame> published)
       : frame(std::move(published)) {
-    buffer.buffer = frame->rgba.data();
+    buffer.buffer = frame->pixels.data();
     buffer.width = static_cast<std::size_t>(frame->width);
     buffer.height = static_cast<std::size_t>(frame->height);
     buffer.release_context = this;
@@ -91,12 +110,21 @@ struct PixelBufferLease {
   FlutterDesktopPixelBuffer buffer{};
 };
 
-flutter::EncodableMap SessionMap(std::int64_t texture_id) {
-  // The current Dart FFI adapter hardcodes presentation and context metrics.
-  // Omitting the optional address keeps rendering on the method channel until
-  // the shared ABI can carry the complete VtkFrameMetrics contract.
+std::int64_t NativeSessionAddress(VtkFlutterSession *session) {
+  const auto address = reinterpret_cast<std::uintptr_t>(session);
+  if (address == 0 || address > static_cast<std::uintptr_t>(
+                                    std::numeric_limits<std::int64_t>::max())) {
+    throw std::runtime_error("Native VTK returned an invalid session address");
+  }
+  return static_cast<std::int64_t>(address);
+}
+
+flutter::EncodableMap SessionMap(std::int64_t texture_id,
+                                 VtkFlutterSession *session) {
   return {
       {Key("textureId"), flutter::EncodableValue(texture_id)},
+      {Key("nativeSessionAddress"),
+       flutter::EncodableValue(NativeSessionAddress(session))},
   };
 }
 
@@ -164,12 +192,7 @@ public:
       return;
     }
     if (call.method_name() == "createSession") {
-      try {
-        const auto viewport = windows::DecodeViewport(call.arguments());
-        CreateSession(viewport, std::move(shared_result));
-      } catch (const std::exception &exception) {
-        shared_result->Error("invalid_viewport", exception.what());
-      }
+      CreateSession(call.arguments(), std::move(shared_result));
       return;
     }
     if (call.method_name() == "setVolume") {
@@ -178,6 +201,10 @@ public:
     }
     if (call.method_name() == "render") {
       Render(call.arguments(), std::move(shared_result));
+      return;
+    }
+    if (call.method_name() == "presentFrame") {
+      PresentFrame(std::move(shared_result));
       return;
     }
     if (call.method_name() == "status") {
@@ -202,21 +229,50 @@ public:
 private:
   struct PendingCreation {
     VtkFlutterViewport viewport;
+    const VtkFlutterCoreApiV2 *core_api;
     SharedResult result;
   };
 
-  void CreateSession(const VtkFlutterViewport &viewport, SharedResult result) {
+  void CreateSession(const flutter::EncodableValue *arguments,
+                     SharedResult result) {
+    VtkFlutterViewport viewport{};
+    try {
+      viewport = windows::DecodeViewport(arguments);
+    } catch (const std::exception &exception) {
+      result->Error("invalid_viewport", exception.what());
+      return;
+    }
+
+    const VtkFlutterCoreApiV2 *core_api = nullptr;
+    try {
+      const auto address = windows::DecodeCoreApiAddress(arguments);
+      core_api = &windows::ValidateCoreApiAddress(address);
+    } catch (const std::exception &exception) {
+      result->Error("ffi_abi", exception.what());
+      return;
+    }
+    CreateSession(viewport, core_api, std::move(result));
+  }
+
+  void CreateSession(const VtkFlutterViewport &viewport,
+                     const VtkFlutterCoreApiV2 *core_api, SharedResult result) {
     if (closed_) {
       result->Error("vtk_disposed", "The Windows VTK plugin is unavailable");
       return;
     }
     if (disposing_) {
-      pending_creations_.push_back({viewport, std::move(result)});
+      pending_creations_.push_back({viewport, core_api, std::move(result)});
       return;
     }
     if (session_ != nullptr) {
+      if (core_api_ != core_api) {
+        result->Error("ffi_abi",
+                      "The active session uses a different native VTK table");
+        return;
+      }
       viewport_ = viewport;
-      result->Success(flutter::EncodableValue(SessionMap(texture_id_.load())));
+      result->Success(
+          flutter::EncodableValue(SessionMap(texture_id_.load(), session_)));
       return;
     }
     if (texture_registrar_ == nullptr || flutter_view_window_ == nullptr ||
@@ -228,27 +284,45 @@ private:
     }
 
     initializing_ = true;
+    auto frame_target = std::make_shared<windows::WindowsFrameTarget>();
+    auto graphics_support = std::string(kGraphicsSupport);
+    VtkFlutterSession *session = nullptr;
+    VtkFlutterTextureTarget *target = nullptr;
+    bool attached = false;
     try {
-      auto presentation = std::make_shared<windows::PresentationState>();
-      auto render_target = std::make_unique<windows::WindowsVtkRenderTarget>(
-          texture_registrar_, presentation);
-      auto *render_target_pointer = render_target.get();
-      auto session =
-          std::make_unique<VtkFlutterSession>(std::move(render_target));
-      auto graphics_support = render_target_pointer->GraphicsSupport();
+      VtkFlutterStatus status{};
+      RequireCoreSuccess(core_api->session_create(&session, &status), status,
+                         "session_create");
+      if (session == nullptr) {
+        throw std::runtime_error(
+            "Native VTK session_create returned no session");
+      }
+      auto callbacks = frame_target->Callbacks();
+      status = {};
+      RequireCoreSuccess(
+          core_api->texture_target_create(&callbacks, &target, &status), status,
+          "texture_target_create");
+      if (target == nullptr) {
+        throw std::runtime_error(
+            "Native VTK texture_target_create returned no target");
+      }
+      status = {};
+      RequireCoreSuccess(
+          core_api->session_attach_texture_target(session, target, &status),
+          status, "session_attach_texture_target");
+      attached = true;
+
       auto texture = std::make_unique<flutter::TextureVariant>(
-          flutter::PixelBufferTexture([presentation](std::size_t, std::size_t) {
-            std::shared_ptr<const windows::PublishedFrame> frame;
-            {
-              std::lock_guard lock(presentation->mutex);
-              frame = presentation->latest;
-            }
+          flutter::PixelBufferTexture([frame_target](std::size_t, std::size_t) {
+            auto frame = frame_target->LatestFrame();
             if (frame == nullptr) {
               return static_cast<const FlutterDesktopPixelBuffer *>(nullptr);
             }
-            presentation->presented_count.fetch_add(1);
-            presentation->presented_frame_id.store(frame->id);
-            auto *lease = new PixelBufferLease(std::move(frame));
+            auto *lease = new (std::nothrow) PixelBufferLease(frame);
+            if (lease == nullptr) {
+              return static_cast<const FlutterDesktopPixelBuffer *>(nullptr);
+            }
+            frame_target->RecordPresented(frame->id);
             return static_cast<const FlutterDesktopPixelBuffer *>(
                 &lease->buffer);
           }));
@@ -258,30 +332,52 @@ private:
         throw std::runtime_error(
             "Flutter rejected the Windows VTK external texture");
       }
-      render_target_pointer->SetTextureId(texture_id);
 
-      graphics_support_ = std::move(graphics_support);
-      presentation_ = std::move(presentation);
-      render_target_ = render_target_pointer;
-      session_ = std::move(session);
+      core_api_ = core_api;
+      session_ = session;
+      target_ = target;
+      frame_target_ = std::move(frame_target);
       texture_ = std::move(texture);
       texture_id_ = texture_id;
       viewport_ = viewport;
-      graphics_context_generation_ =
-          render_target_pointer->GraphicsContextGeneration();
+      graphics_context_generation_ = 1;
+      graphics_support_ = std::move(graphics_support);
       ready_ = true;
       initializing_ = false;
-      result->Success(flutter::EncodableValue(SessionMap(texture_id_.load())));
+      result->Success(
+          flutter::EncodableValue(SessionMap(texture_id, session_)));
+    } catch (const CoreFailure &failure) {
+      CleanupCreatedCore(core_api, session, target, attached);
+      initializing_ = false;
+      result->Error(StatusCode(failure.code()), failure.what());
     } catch (const std::exception &exception) {
-      render_target_ = nullptr;
-      session_.reset();
-      texture_.reset();
-      presentation_.reset();
-      texture_id_ = -1;
-      graphics_context_generation_ = 0;
-      ready_ = false;
+      CleanupCreatedCore(core_api, session, target, attached);
       initializing_ = false;
       result->Error("vtk_create_failed", exception.what());
+    }
+  }
+
+  static void CleanupCreatedCore(const VtkFlutterCoreApiV2 *core_api,
+                                 VtkFlutterSession *session,
+                                 VtkFlutterTextureTarget *target,
+                                 bool attached) noexcept {
+    if (core_api == nullptr) {
+      return;
+    }
+    if (attached && session != nullptr && target != nullptr) {
+      VtkFlutterStatus status{};
+      if (core_api->session_detach_texture_target(session, target, &status) !=
+          VTK_FLUTTER_STATUS_OK) {
+        core_api->session_destroy(session);
+        session = nullptr;
+      }
+    }
+    if (target != nullptr) {
+      VtkFlutterStatus status{};
+      core_api->texture_target_destroy(target, &status);
+    }
+    if (session != nullptr) {
+      core_api->session_destroy(session);
     }
   }
 
@@ -294,8 +390,8 @@ private:
       const auto volume = windows::DecodeVolume(arguments);
       const auto native_volume = volume.NativeView();
       VtkFlutterStatus status{};
-      const auto code = vtk_flutter_session_set_volume(session_.get(),
-                                                       &native_volume, &status);
+      const auto code =
+          core_api_->session_set_volume(session_, &native_volume, &status);
       if (code != VTK_FLUTTER_STATUS_OK) {
         result->Error(StatusCode(code), StatusMessage("setVolume", status));
         return;
@@ -314,8 +410,8 @@ private:
       const auto request = windows::DecodeRenderRequest(arguments, viewport_);
       VtkFlutterMetrics metrics{};
       VtkFlutterStatus status{};
-      const auto code = vtk_flutter_session_render(session_.get(), &request,
-                                                   &metrics, &status);
+      const auto code =
+          core_api_->session_render(session_, &request, &metrics, &status);
       if (code != VTK_FLUTTER_STATUS_OK) {
         result->Error(StatusCode(code), StatusMessage("render", status));
         return;
@@ -328,8 +424,31 @@ private:
     }
   }
 
+  void PresentFrame(SharedResult result) {
+    if (!CanUseSession(result)) {
+      return;
+    }
+    if (platform_thread_id_ != 0 &&
+        GetCurrentThreadId() != platform_thread_id_) {
+      result->Error("invalid_state",
+                    "Windows frames must be presented on the platform thread");
+      return;
+    }
+    const auto frame = frame_target_->LatestFrame();
+    if (frame == nullptr) {
+      result->Error("vtk_render_failed",
+                    "Native VTK has not published a Windows frame");
+      return;
+    }
+    if (!texture_registrar_->MarkTextureFrameAvailable(texture_id_.load())) {
+      result->Error("vtk_render_failed",
+                    "Flutter rejected the Windows VTK texture frame");
+      return;
+    }
+    result->Success(flutter::EncodableValue(PresentationMap(frame->id)));
+  }
+
   flutter::EncodableMap FrameMap(const VtkFlutterMetrics &metrics) const {
-    const auto frame_id = render_target_->FrameId();
     flutter::EncodableMap values{
         {Key("textureId"), flutter::EncodableValue(texture_id_.load())},
         {Key("width"), flutter::EncodableValue(metrics.frame_width)},
@@ -349,15 +468,15 @@ private:
          flutter::EncodableValue(Microseconds(metrics.gpu_sync_wait_ms))},
         {Key("readbackUs"),
          flutter::EncodableValue(Microseconds(metrics.cpu_readback_ms))},
-        {Key("frameId"), flutter::EncodableValue(frame_id)},
+        {Key("frameId"),
+         flutter::EncodableValue(frame_target_->SubmittedFrameId())},
         {Key("presentedFrameCount"),
-         flutter::EncodableValue(presentation_->presented_count.load())},
+         flutter::EncodableValue(frame_target_->PresentedFrameCount())},
         {Key("presentedFrameId"),
-         flutter::EncodableValue(presentation_->presented_frame_id.load())},
+         flutter::EncodableValue(frame_target_->PresentedFrameId())},
         {Key("graphicsContextGeneration"),
-         flutter::EncodableValue(render_target_->GraphicsContextGeneration())},
-        {Key("handoffMode"),
-         flutter::EncodableValue("windows_pixel_buffer_rgba_readback")},
+         flutter::EncodableValue(graphics_context_generation_.load())},
+        {Key("handoffMode"), flutter::EncodableValue(kHandoffMode)},
     };
     if (metrics.surface_unique_byte_values > 0) {
       values.emplace(
@@ -379,8 +498,21 @@ private:
     return values;
   }
 
+  flutter::EncodableMap PresentationMap(std::int64_t frame_id) const {
+    return {
+        {Key("frameId"), flutter::EncodableValue(frame_id)},
+        {Key("presentedFrameCount"),
+         flutter::EncodableValue(frame_target_->PresentedFrameCount())},
+        {Key("presentedFrameId"),
+         flutter::EncodableValue(frame_target_->PresentedFrameId())},
+        {Key("graphicsContextGeneration"),
+         flutter::EncodableValue(graphics_context_generation_.load())},
+        {Key("handoffMode"), flutter::EncodableValue(kHandoffMode)},
+    };
+  }
+
   flutter::EncodableMap Status() const {
-    const auto presentation = presentation_;
+    const auto frame_target = frame_target_;
     return {
         {Key("textureId"), flutter::EncodableValue(texture_id_.load())},
         {Key("ready"), flutter::EncodableValue(ready_.load())},
@@ -392,14 +524,13 @@ private:
          flutter::EncodableValue(
              static_cast<std::int64_t>(pending_creations_.size()))},
         {Key("presentedFrameCount"),
-         flutter::EncodableValue(presentation == nullptr
+         flutter::EncodableValue(frame_target == nullptr
                                      ? std::int64_t{0}
-                                     : presentation->presented_count.load())},
+                                     : frame_target->PresentedFrameCount())},
         {Key("presentedFrameId"),
-         flutter::EncodableValue(
-             presentation == nullptr
-                 ? std::int64_t{0}
-                 : presentation->presented_frame_id.load())},
+         flutter::EncodableValue(frame_target == nullptr
+                                     ? std::int64_t{0}
+                                     : frame_target->PresentedFrameId())},
         {Key("graphicsContextGeneration"),
          flutter::EncodableValue(graphics_context_generation_.load())},
         {Key("graphicsSupport"), flutter::EncodableValue(graphics_support_)},
@@ -422,25 +553,77 @@ private:
     if (!CanUseSession(result)) {
       return;
     }
+
+    VtkFlutterTextureTarget *replacement = nullptr;
+    bool old_detached = false;
     try {
-      const auto generation = graphics_context_generation_.load() + 1;
-      auto render_target = std::make_unique<windows::WindowsVtkRenderTarget>(
-          texture_registrar_, presentation_, generation);
-      auto *render_target_pointer = render_target.get();
-      render_target_pointer->SetTextureId(texture_id_);
-      {
-        std::lock_guard lock(windows::NativeSessionMutex());
-        session_->value.SetRenderTarget(std::move(render_target));
-      }
-      render_target_ = render_target_pointer;
-      graphics_context_generation_ = generation;
-      graphics_support_ = render_target_->GraphicsSupport();
+      auto callbacks = frame_target_->Callbacks();
+      VtkFlutterStatus status{};
+      RequireCoreSuccess(
+          core_api_->texture_target_create(&callbacks, &replacement, &status),
+          status, "texture_target_create");
+      status = {};
+      RequireCoreSuccess(
+          core_api_->session_detach_texture_target(session_, target_, &status),
+          status, "session_detach_texture_target");
+      old_detached = true;
+      status = {};
+      RequireCoreSuccess(core_api_->session_attach_texture_target(
+                             session_, replacement, &status),
+                         status, "session_attach_texture_target");
+
+      auto *previous = target_;
+      target_ = replacement;
+      replacement = nullptr;
+      status = {};
+      RequireCoreSuccess(core_api_->texture_target_destroy(previous, &status),
+                         status, "texture_target_destroy");
+      const auto generation = graphics_context_generation_.fetch_add(1) + 1;
       result->Success(flutter::EncodableValue(flutter::EncodableMap{
           {Key("graphicsContextGeneration"),
            flutter::EncodableValue(generation)},
       }));
+    } catch (const CoreFailure &failure) {
+      if (old_detached && replacement != nullptr) {
+        VtkFlutterStatus rollback_status{};
+        core_api_->session_attach_texture_target(session_, target_,
+                                                 &rollback_status);
+      }
+      if (replacement != nullptr) {
+        VtkFlutterStatus destroy_status{};
+        core_api_->texture_target_destroy(replacement, &destroy_status);
+      }
+      result->Error("vtk_context_failed", failure.what());
     } catch (const std::exception &exception) {
       result->Error("vtk_context_failed", exception.what());
+    }
+  }
+
+  void DestroyCoreObjects() noexcept {
+    const auto *core_api = core_api_;
+    auto *session = session_;
+    auto *target = target_;
+    core_api_ = nullptr;
+    session_ = nullptr;
+    target_ = nullptr;
+    if (core_api == nullptr) {
+      return;
+    }
+
+    if (session != nullptr && target != nullptr) {
+      VtkFlutterStatus status{};
+      if (core_api->session_detach_texture_target(session, target, &status) !=
+          VTK_FLUTTER_STATUS_OK) {
+        core_api->session_destroy(session);
+        session = nullptr;
+      }
+    }
+    if (target != nullptr) {
+      VtkFlutterStatus status{};
+      core_api->texture_target_destroy(target, &status);
+    }
+    if (session != nullptr) {
+      core_api->session_destroy(session);
     }
   }
 
@@ -458,16 +641,11 @@ private:
     }
 
     ready_ = false;
-    render_target_ = nullptr;
-    {
-      std::lock_guard lock(windows::NativeSessionMutex());
-      session_.reset();
-    }
+    DestroyCoreObjects();
     viewport_ = {};
     graphics_context_generation_ = 0;
-    if (presentation_ != nullptr) {
-      std::lock_guard lock(presentation_->mutex);
-      presentation_->latest.reset();
+    if (frame_target_ != nullptr) {
+      frame_target_->Clear();
     }
 
     const auto texture_id = texture_id_.exchange(-1);
@@ -499,18 +677,14 @@ private:
             pending_unregistrations_ = 0;
             unregister_condition_.notify_all();
           }
-          // The synchronized block is deliberately the callback's final
-          // access to the plugin. A waiting destructor may release it at once.
         });
   }
 
   void FinishDispose() {
-    if (presentation_ != nullptr) {
-      presentation_->submitted_frame_id = 0;
-      presentation_->presented_count = 0;
-      presentation_->presented_frame_id = 0;
+    if (frame_target_ != nullptr) {
+      frame_target_->Clear();
     }
-    presentation_.reset();
+    frame_target_.reset();
     disposing_ = false;
 
     auto disposals = std::move(pending_disposals_);
@@ -526,14 +700,16 @@ private:
         creation.result->Error("vtk_disposed",
                                "The Windows VTK plugin is unavailable");
       } else {
-        CreateSession(creation.viewport, std::move(creation.result));
+        CreateSession(creation.viewport, creation.core_api,
+                      std::move(creation.result));
       }
     }
   }
 
   bool CanUseSession(const SharedResult &result) const {
     if (closed_ || disposing_ || initializing_ || !ready_ ||
-        session_ == nullptr || render_target_ == nullptr || texture_id_ < 0) {
+        core_api_ == nullptr || session_ == nullptr || target_ == nullptr ||
+        frame_target_ == nullptr || texture_id_ < 0) {
       result->Error("vtk_not_initialized",
                     "Create a Windows VTK session before using it");
       return false;
@@ -589,9 +765,10 @@ private:
   flutter::TextureRegistrar *texture_registrar_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
   std::unique_ptr<flutter::TextureVariant> texture_;
-  std::unique_ptr<VtkFlutterSession> session_;
-  windows::WindowsVtkRenderTarget *render_target_ = nullptr;
-  std::shared_ptr<windows::PresentationState> presentation_;
+  const VtkFlutterCoreApiV2 *core_api_ = nullptr;
+  VtkFlutterSession *session_ = nullptr;
+  VtkFlutterTextureTarget *target_ = nullptr;
+  std::shared_ptr<windows::WindowsFrameTarget> frame_target_;
   VtkFlutterViewport viewport_{};
   std::atomic<std::int64_t> texture_id_ = -1;
   std::atomic<std::int64_t> graphics_context_generation_ = 0;

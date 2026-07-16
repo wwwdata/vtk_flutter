@@ -2,41 +2,18 @@
 #import "VtkFlutterProtocol.h"
 
 #import <CoreVideo/CoreVideo.h>
-#import <OpenGL/OpenGL.h>
-#import <OpenGL/gl3.h>
 
-#include "../../../../native/src/session.h"
-
-#include <vtkCamera.h>
-#include <vtkCocoaRenderWindow.h>
-#include <vtkMatrix4x4.h>
-#include <vtkOpenGLFramebufferObject.h>
-#include <vtkOpenGLRenderWindow.h>
-#include <vtkOpenGLState.h>
-#include <vtkRenderer.h>
-#include <vtkRendererCollection.h>
-#include <vtkSmartPointer.h>
-
-#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
-#include <memory>
-#include <stdexcept>
-#include <string>
-
-void vtkRenderingOpenGL2_AutoInit_Construct();
-void vtkRenderingVolumeOpenGL2_AutoInit_Construct();
 
 namespace {
-using Clock = std::chrono::steady_clock;
+constexpr const char* kHandoffMode = "cpu_bgra_pixel_buffer";
 
-template <typename Duration>
-double Milliseconds(Duration duration) {
-  return std::chrono::duration<double, std::milli>(duration).count();
-}
-
-NSString* ExceptionMessage(const std::exception& exception) {
-  return [NSString stringWithUTF8String:exception.what()];
+void SetStatus(VtkFlutterStatus* status, int32_t code, const char* message) {
+  if (status == nullptr) return;
+  status->code = code;
+  std::snprintf(status->message, sizeof(status->message), "%s", message);
 }
 
 FlutterError* StatusError(NSString* operation,
@@ -53,221 +30,9 @@ FlutterError* StatusError(NSString* operation,
   NSString* message = status.message[0] == '\0'
                           ? [NSString stringWithFormat:@"%@ failed", operation]
                           : [NSString stringWithUTF8String:status.message];
+  if (message == nil) message = [NSString stringWithFormat:@"%@ failed", operation];
   return [FlutterError errorWithCode:errorCode message:message details:nil];
 }
-
-class CoreVideoTarget final {
- public:
-  CoreVideoTarget(vtkCocoaRenderWindow* window, int width, int height)
-      : width_(width), height_(height) {
-    NSOpenGLContext* context = (__bridge NSOpenGLContext*)window->GetContextId();
-    if (context == nil) {
-      throw std::runtime_error("VTK did not create an NSOpenGLContext");
-    }
-    NSDictionary* attributes = @{
-      (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
-      (id)kCVPixelBufferOpenGLCompatibilityKey : @YES,
-      (id)kCVPixelBufferMetalCompatibilityKey : @YES,
-    };
-    try {
-      Check(CVPixelBufferCreate(kCFAllocatorDefault, width, height,
-                                kCVPixelFormatType_32BGRA,
-                                (__bridge CFDictionaryRef)attributes,
-                                &pixelBuffer_),
-            "CVPixelBufferCreate");
-      if (CVPixelBufferGetIOSurface(pixelBuffer_) == nullptr) {
-        throw std::runtime_error("macOS pixel buffer has no IOSurface");
-      }
-      Check(CVOpenGLTextureCacheCreate(kCFAllocatorDefault, nullptr,
-                                       context.CGLContextObj,
-                                       context.pixelFormat.CGLPixelFormatObj,
-                                       nullptr, &textureCache_),
-            "CVOpenGLTextureCacheCreate");
-      Check(CVOpenGLTextureCacheCreateTextureFromImage(
-                kCFAllocatorDefault, textureCache_, pixelBuffer_, nullptr,
-                &texture_),
-            "CVOpenGLTextureCacheCreateTextureFromImage");
-      glGenFramebuffers(1, &framebuffer_);
-      glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_);
-      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                             CVOpenGLTextureGetTarget(texture_),
-                             CVOpenGLTextureGetName(texture_), 0);
-      glDrawBuffer(GL_COLOR_ATTACHMENT0);
-      if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        throw std::runtime_error("macOS IOSurface framebuffer is incomplete");
-      }
-      glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    } catch (...) {
-      ReleaseResources();
-      throw;
-    }
-  }
-
-  ~CoreVideoTarget() { ReleaseResources(); }
-
-  CoreVideoTarget(const CoreVideoTarget&) = delete;
-  CoreVideoTarget& operator=(const CoreVideoTarget&) = delete;
-
-  bool Matches(int width, int height) const {
-    return width_ == width && height_ == height;
-  }
-
-  void BindDraw(vtkOpenGLState* state) const {
-    state->vtkglBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer_);
-    state->vtkglDrawBuffer(GL_COLOR_ATTACHMENT0);
-  }
-
-  CVPixelBufferRef RetainPixelBuffer() const {
-    return CVPixelBufferRetain(pixelBuffer_);
-  }
-
-  std::size_t AllocationBytes() const {
-    return CVPixelBufferGetDataSize(pixelBuffer_);
-  }
-
- private:
-  static void Check(CVReturn result, const char* operation) {
-    if (result != kCVReturnSuccess) {
-      throw std::runtime_error(std::string(operation) +
-                               " failed with CoreVideo status " +
-                               std::to_string(result));
-    }
-  }
-
-  void ReleaseResources() {
-    if (framebuffer_ != 0) {
-      glDeleteFramebuffers(1, &framebuffer_);
-      framebuffer_ = 0;
-    }
-    if (texture_ != nullptr) {
-      CFRelease(texture_);
-      texture_ = nullptr;
-    }
-    if (textureCache_ != nullptr) {
-      CVOpenGLTextureCacheFlush(textureCache_, 0);
-      CFRelease(textureCache_);
-      textureCache_ = nullptr;
-    }
-    if (pixelBuffer_ != nullptr) {
-      CVPixelBufferRelease(pixelBuffer_);
-      pixelBuffer_ = nullptr;
-    }
-  }
-
-  int width_;
-  int height_;
-  CVPixelBufferRef pixelBuffer_ = nullptr;
-  CVOpenGLTextureCacheRef textureCache_ = nullptr;
-  CVOpenGLTextureRef texture_ = nullptr;
-  GLuint framebuffer_ = 0;
-};
-
-class MacRenderTarget final : public vtk_flutter::RenderTarget {
- public:
-  MacRenderTarget() {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-      vtkRenderingOpenGL2_AutoInit_Construct();
-      vtkRenderingVolumeOpenGL2_AutoInit_Construct();
-    });
-    window_ = vtkSmartPointer<vtkCocoaRenderWindow>::New();
-    window_->SetWindowName("vtk_flutter");
-    window_->SetShowWindow(false);
-    window_->SetUseOffScreenBuffers(false);
-    window_->SetAlphaBitPlanes(1);
-    window_->SetMultiSamples(0);
-    window_->SetSwapBuffers(0);
-    window_->Initialize();
-    window_->MakeCurrent();
-    openGlWindow_ = vtkOpenGLRenderWindow::SafeDownCast(window_);
-    if (openGlWindow_ == nullptr) {
-      throw std::runtime_error("macOS VTK render window is not OpenGL-backed");
-    }
-  }
-
-  ~MacRenderTarget() override {
-    if (window_ != nullptr) window_->MakeCurrent();
-    target_.reset();
-    window_ = nullptr;
-  }
-
-  void Render(vtk_flutter::PreparedView view,
-              const VtkFlutterViewport& viewport,
-              VtkFlutterMetrics& metrics) override {
-    window_->MakeCurrent();
-    EnsureTarget(viewport.width, viewport.height);
-    window_->GetRenderers()->RemoveAllItems();
-    window_->AddRenderer(view.renderer);
-
-    const auto renderStart = Clock::now();
-    window_->Render();
-    const auto renderEnd = Clock::now();
-    openGlWindow_->GetRenderFramebuffer()->Bind(GL_READ_FRAMEBUFFER);
-    openGlWindow_->GetRenderFramebuffer()->ActivateReadBuffer(0);
-    target_->BindDraw(openGlWindow_->GetState());
-    const auto blitStart = Clock::now();
-    openGlWindow_->GetState()->vtkglBlitFramebuffer(
-        0, 0, viewport.width, viewport.height, 0, 0, viewport.width,
-        viewport.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-    const auto blitEnd = Clock::now();
-
-    GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-    if (fence == nullptr) {
-      throw std::runtime_error("macOS OpenGL fence creation failed");
-    }
-    glFlush();
-    const auto syncStart = Clock::now();
-    GLenum waitResult = GL_TIMEOUT_EXPIRED;
-    for (int attempt = 0;
-         attempt < 5 && waitResult == GL_TIMEOUT_EXPIRED; ++attempt) {
-      waitResult =
-          glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
-    }
-    const auto syncEnd = Clock::now();
-    glDeleteSync(fence);
-    if (waitResult == GL_WAIT_FAILED || waitResult == GL_TIMEOUT_EXPIRED) {
-      throw std::runtime_error("macOS OpenGL fence wait failed");
-    }
-
-    metrics.surface_allocation_bytes = target_->AllocationBytes();
-    metrics.render_ms = Milliseconds(renderEnd - renderStart);
-    metrics.surface_submit_ms = Milliseconds(blitEnd - blitStart);
-    metrics.gpu_sync_wait_ms = Milliseconds(syncEnd - syncStart);
-    metrics.cpu_readback_ms = 0.0;
-    if (view.capture_patient_to_clip) {
-      vtkRenderer* renderer = window_->GetRenderers()->GetFirstRenderer();
-      if (renderer == nullptr) {
-        throw std::runtime_error("locator render produced no renderer");
-      }
-      vtkMatrix4x4* matrix =
-          renderer->GetActiveCamera()->GetCompositeProjectionTransformMatrix(
-              renderer->GetTiledAspectRatio(), -1.0, 1.0);
-      for (int row = 0; row < 4; ++row) {
-        for (int column = 0; column < 4; ++column) {
-          metrics.patient_to_clip[row * 4 + column] =
-              matrix->GetElement(row, column);
-        }
-      }
-      metrics.patient_to_clip_valid = 1;
-    }
-  }
-
-  CVPixelBufferRef RetainPixelBuffer() const {
-    return target_ == nullptr ? nullptr : target_->RetainPixelBuffer();
-  }
-
- private:
-  void EnsureTarget(int width, int height) {
-    if (target_ != nullptr && target_->Matches(width, height)) return;
-    target_.reset();
-    window_->SetSize(width, height);
-    target_ = std::make_unique<CoreVideoTarget>(window_, width, height);
-  }
-
-  vtkSmartPointer<vtkCocoaRenderWindow> window_;
-  vtkOpenGLRenderWindow* openGlWindow_ = nullptr;
-  std::unique_ptr<CoreVideoTarget> target_;
-};
 }  // namespace
 
 @interface VtkFlutterExternalTexture : NSObject <FlutterTexture>
@@ -323,17 +88,67 @@ class MacRenderTarget final : public vtk_flutter::RenderTarget {
 
 @interface VtkFlutterPlugin ()
 - (instancetype)initWithRegistrar:(id<FlutterPluginRegistrar>)registrar;
+- (int32_t)beginFrame:(const VtkFlutterViewport*)viewport
+                frame:(VtkFlutterCpuFrameV2*)frame
+               status:(VtkFlutterStatus*)status;
+- (int32_t)endFrame:(const VtkFlutterMetrics*)metrics
+              status:(VtkFlutterStatus*)status;
+- (void)cancelFrame;
 @end
+
+static int32_t VtkFlutterBeginFrame(void* userData,
+                                    const VtkFlutterViewport* viewport,
+                                    VtkFlutterCpuFrameV2* frame,
+                                    VtkFlutterStatus* status) {
+  @autoreleasepool {
+    VtkFlutterPlugin* plugin = (__bridge VtkFlutterPlugin*)userData;
+    if (plugin == nil) {
+      SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
+                "macOS frame callback state is unavailable");
+      return VTK_FLUTTER_STATUS_INVALID_STATE;
+    }
+    return [plugin beginFrame:viewport frame:frame status:status];
+  }
+}
+
+static int32_t VtkFlutterEndFrame(void* userData,
+                                  const VtkFlutterMetrics* metrics,
+                                  VtkFlutterStatus* status) {
+  @autoreleasepool {
+    VtkFlutterPlugin* plugin = (__bridge VtkFlutterPlugin*)userData;
+    if (plugin == nil) {
+      SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
+                "macOS frame callback state is unavailable");
+      return VTK_FLUTTER_STATUS_INVALID_STATE;
+    }
+    return [plugin endFrame:metrics status:status];
+  }
+}
+
+static void VtkFlutterCancelFrame(void* userData) {
+  @autoreleasepool {
+    VtkFlutterPlugin* plugin = (__bridge VtkFlutterPlugin*)userData;
+    [plugin cancelFrame];
+  }
+}
 
 @implementation VtkFlutterPlugin {
   id<FlutterPluginRegistrar> _registrar;
   VtkFlutterExternalTexture* _texture;
   int64_t _textureId;
-  std::unique_ptr<VtkFlutterSession> _session;
-  MacRenderTarget* _renderTarget;
+  const VtkFlutterCoreApiV2* _coreApi;
+  VtkFlutterSession* _session;
+  VtkFlutterTextureTarget* _textureTarget;
   VtkFlutterViewport _viewport;
   int64_t _frameId;
   int64_t _graphicsContextGeneration;
+
+  CVPixelBufferPoolRef _pixelBufferPool;
+  CVPixelBufferRef _inProgressPixelBuffer;
+  CVPixelBufferRef _completedPixelBuffer;
+  int32_t _poolWidth;
+  int32_t _poolHeight;
+  BOOL _frameLocked;
 }
 
 + (void)registerWithRegistrar:(id<FlutterPluginRegistrar>)registrar {
@@ -387,45 +202,92 @@ class MacRenderTarget final : public vtk_flutter::RenderTarget {
     result([FlutterError errorWithCode:@"invalid_viewport" message:message details:nil]);
     return;
   }
+  const VtkFlutterCoreApiV2* coreApi = nullptr;
+  if (!VtkFlutterDecodeCoreApi(arguments, &coreApi, &message)) {
+    result([FlutterError errorWithCode:@"invalid_core_api" message:message details:nil]);
+    return;
+  }
   if (_session != nullptr) {
+    if (_coreApi != coreApi) {
+      result([FlutterError errorWithCode:@"invalid_state"
+                                 message:@"The active session uses a different core API table"
+                                 details:nil]);
+      return;
+    }
     _viewport = viewport;
     result(@{
       @"textureId" : @(_textureId),
       @"nativeSessionAddress" : @(
-          static_cast<uint64_t>(reinterpret_cast<uintptr_t>(_session.get())))
+          static_cast<uint64_t>(reinterpret_cast<uintptr_t>(_session)))
     });
     return;
   }
-  try {
-    auto renderTarget = std::make_unique<MacRenderTarget>();
-    MacRenderTarget* renderTargetPointer = renderTarget.get();
-    auto session = std::make_unique<VtkFlutterSession>(std::move(renderTarget));
-    VtkFlutterExternalTexture* texture = [[VtkFlutterExternalTexture alloc] init];
-    int64_t textureId = [_registrar.textures registerTexture:texture];
-    if (textureId == 0) {
-      throw std::runtime_error("Flutter rejected the macOS external texture");
-    }
-    _session = std::move(session);
-    _renderTarget = renderTargetPointer;
-    _texture = texture;
-    _textureId = textureId;
-    _viewport = viewport;
-    _frameId = 0;
-    _graphicsContextGeneration = 1;
-    result(@{
-      @"textureId" : @(_textureId),
-      @"nativeSessionAddress" : @(
-          static_cast<uint64_t>(reinterpret_cast<uintptr_t>(_session.get())))
-    });
-  } catch (const std::exception& exception) {
+
+  VtkFlutterExternalTexture* texture = [[VtkFlutterExternalTexture alloc] init];
+  int64_t textureId = [_registrar.textures registerTexture:texture];
+  if (textureId <= 0) {
     result([FlutterError errorWithCode:@"vtk_create_failed"
-                               message:ExceptionMessage(exception)
+                               message:@"Flutter rejected the macOS external texture"
                                details:nil]);
+    return;
   }
+
+  VtkFlutterFrameCallbacksV2 callbacks{
+      .struct_size = sizeof(VtkFlutterFrameCallbacksV2),
+      .version = VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2,
+      .user_data = (__bridge void*)self,
+      .begin_frame = VtkFlutterBeginFrame,
+      .end_frame = VtkFlutterEndFrame,
+      .cancel_frame = VtkFlutterCancelFrame,
+  };
+  VtkFlutterStatus status{};
+  VtkFlutterTextureTarget* textureTarget = nullptr;
+  int32_t code = coreApi->texture_target_create(&callbacks, &textureTarget, &status);
+  if (code != VTK_FLUTTER_STATUS_OK) {
+    [_registrar.textures unregisterTexture:textureId];
+    result(StatusError(@"create texture target", code, status));
+    return;
+  }
+
+  VtkFlutterSession* session = nullptr;
+  status = {};
+  code = coreApi->session_create(&session, &status);
+  if (code != VTK_FLUTTER_STATUS_OK) {
+    VtkFlutterStatus destroyStatus{};
+    coreApi->texture_target_destroy(textureTarget, &destroyStatus);
+    [_registrar.textures unregisterTexture:textureId];
+    result(StatusError(@"create session", code, status));
+    return;
+  }
+
+  status = {};
+  code = coreApi->session_attach_texture_target(session, textureTarget, &status);
+  if (code != VTK_FLUTTER_STATUS_OK) {
+    coreApi->session_destroy(session);
+    VtkFlutterStatus destroyStatus{};
+    coreApi->texture_target_destroy(textureTarget, &destroyStatus);
+    [_registrar.textures unregisterTexture:textureId];
+    result(StatusError(@"attach texture target", code, status));
+    return;
+  }
+
+  _coreApi = coreApi;
+  _session = session;
+  _textureTarget = textureTarget;
+  _texture = texture;
+  _textureId = textureId;
+  _viewport = viewport;
+  _frameId = 0;
+  _graphicsContextGeneration = 1;
+  result(@{
+    @"textureId" : @(_textureId),
+    @"nativeSessionAddress" : @(
+        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(_session)))
+  });
 }
 
 - (void)setVolume:(id)arguments result:(FlutterResult)result {
-  if (_session == nullptr) {
+  if (_session == nullptr || _coreApi == nullptr) {
     result([FlutterError errorWithCode:@"vtk_not_initialized"
                                message:@"Create a VTK session before uploading a volume"
                                details:nil]);
@@ -438,7 +300,7 @@ class MacRenderTarget final : public vtk_flutter::RenderTarget {
     return;
   }
   VtkFlutterStatus status{};
-  int32_t code = vtk_flutter_session_set_volume(_session.get(), &volume, &status);
+  int32_t code = _coreApi->session_set_volume(_session, &volume, &status);
   if (code != VTK_FLUTTER_STATUS_OK) {
     result(StatusError(@"setVolume", code, status));
     return;
@@ -447,7 +309,8 @@ class MacRenderTarget final : public vtk_flutter::RenderTarget {
 }
 
 - (void)render:(id)arguments result:(FlutterResult)result {
-  if (_session == nullptr || _texture == nil || _renderTarget == nullptr) {
+  if (_session == nullptr || _coreApi == nullptr || _texture == nil ||
+      _textureTarget == nullptr) {
     result([FlutterError errorWithCode:@"vtk_not_initialized"
                                message:@"Create a VTK session before rendering"
                                details:nil]);
@@ -463,21 +326,17 @@ class MacRenderTarget final : public vtk_flutter::RenderTarget {
   }
   VtkFlutterMetrics metrics{};
   VtkFlutterStatus status{};
-  int32_t code = vtk_flutter_session_render(_session.get(), &request, &metrics, &status);
+  int32_t code = _coreApi->session_render(_session, &request, &metrics, &status);
   if (code != VTK_FLUTTER_STATUS_OK) {
     result(StatusError(@"render", code, status));
     return;
   }
-  CVPixelBufferRef pixelBuffer = _renderTarget->RetainPixelBuffer();
-  if (pixelBuffer == nullptr) {
+  if (![self publishCompletedFrame]) {
     result([FlutterError errorWithCode:@"vtk_render_failed"
                                message:@"VTK produced no macOS pixel buffer"
                                details:nil]);
     return;
   }
-  ++_frameId;
-  [_texture replacePixelBuffer:pixelBuffer frameId:_frameId];
-  [_registrar.textures textureFrameAvailable:_textureId];
   NSMutableDictionary* response = [@{
     @"textureId" : @(_textureId),
     @"width" : @(metrics.frame_width),
@@ -488,12 +347,12 @@ class MacRenderTarget final : public vtk_flutter::RenderTarget {
     @"renderUs" : @(llround(metrics.render_ms * 1000.0)),
     @"blitSubmitUs" : @(llround(metrics.surface_submit_ms * 1000.0)),
     @"gpuSyncWaitUs" : @(llround(metrics.gpu_sync_wait_ms * 1000.0)),
-    @"readbackUs" : @0,
+    @"readbackUs" : @(llround(metrics.cpu_readback_ms * 1000.0)),
     @"frameId" : @(_frameId),
     @"presentedFrameCount" : @(_texture.presentedFrameCount),
     @"presentedFrameId" : @(_texture.presentedFrameId),
     @"graphicsContextGeneration" : @(_graphicsContextGeneration),
-    @"handoffMode" : @"iosurface_opengl_blit",
+    @"handoffMode" : [NSString stringWithUTF8String:kHandoffMode],
   } mutableCopy];
   if (metrics.patient_to_clip_valid != 0) {
     NSMutableArray<NSNumber*>* matrix = [NSMutableArray arrayWithCapacity:16];
@@ -505,34 +364,45 @@ class MacRenderTarget final : public vtk_flutter::RenderTarget {
   result(response);
 }
 
+- (BOOL)publishCompletedFrame {
+  CVPixelBufferRef pixelBuffer = nullptr;
+  @synchronized(self) {
+    if (_completedPixelBuffer != nullptr) {
+      pixelBuffer = CVPixelBufferRetain(_completedPixelBuffer);
+    }
+  }
+  if (pixelBuffer == nullptr) return NO;
+  ++_frameId;
+  [_texture replacePixelBuffer:pixelBuffer frameId:_frameId];
+  [_registrar.textures textureFrameAvailable:_textureId];
+  return YES;
+}
+
 - (void)presentFrame:(FlutterResult)result {
-  if (_session == nullptr || _texture == nil || _renderTarget == nullptr) {
+  if (_session == nullptr || _texture == nil || _textureTarget == nullptr) {
     result([FlutterError errorWithCode:@"vtk_not_initialized"
                                message:@"Create a VTK session before presenting"
                                details:nil]);
     return;
   }
-  CVPixelBufferRef pixelBuffer = _renderTarget->RetainPixelBuffer();
-  if (pixelBuffer == nullptr) {
+  if (![self publishCompletedFrame]) {
     result([FlutterError errorWithCode:@"vtk_render_failed"
                                message:@"VTK produced no macOS pixel buffer"
                                details:nil]);
     return;
   }
-  ++_frameId;
-  [_texture replacePixelBuffer:pixelBuffer frameId:_frameId];
-  [_registrar.textures textureFrameAvailable:_textureId];
   result(@{
     @"frameId" : @(_frameId),
     @"presentedFrameCount" : @(_texture.presentedFrameCount),
     @"presentedFrameId" : @(_texture.presentedFrameId),
     @"graphicsContextGeneration" : @(_graphicsContextGeneration),
-    @"handoffMode" : @"iosurface_opengl_blit",
+    @"handoffMode" : [NSString stringWithUTF8String:kHandoffMode],
   });
 }
 
 - (NSDictionary*)status {
-  BOOL ready = _session != nullptr && _texture != nil && _textureId > 0;
+  BOOL ready = _session != nullptr && _textureTarget != nullptr &&
+               _texture != nil && _textureId > 0;
   return @{
     @"textureId" : @(_textureId),
     @"ready" : @(ready),
@@ -543,7 +413,7 @@ class MacRenderTarget final : public vtk_flutter::RenderTarget {
     @"presentedFrameCount" : @(_texture.presentedFrameCount),
     @"presentedFrameId" : @(_texture.presentedFrameId),
     @"graphicsContextGeneration" : @(_graphicsContextGeneration),
-    @"graphicsSupport" : @"OpenGL IOSurface (macOS)",
+    @"graphicsSupport" : @"Core-owned VTK with BGRA CVPixelBuffer (macOS)",
   };
 }
 
@@ -564,34 +434,213 @@ class MacRenderTarget final : public vtk_flutter::RenderTarget {
   result(nil);
 }
 
+- (VtkFlutterFrameCallbacksV2)frameCallbacks {
+  return VtkFlutterFrameCallbacksV2{
+      .struct_size = sizeof(VtkFlutterFrameCallbacksV2),
+      .version = VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2,
+      .user_data = (__bridge void*)self,
+      .begin_frame = VtkFlutterBeginFrame,
+      .end_frame = VtkFlutterEndFrame,
+      .cancel_frame = VtkFlutterCancelFrame,
+  };
+}
+
 - (void)recreateGraphicsContext:(FlutterResult)result {
-  if (_session == nullptr) {
+  if (_session == nullptr || _coreApi == nullptr || _textureTarget == nullptr) {
     result([FlutterError errorWithCode:@"vtk_not_initialized"
                                message:@"Create a VTK session before recreating graphics"
                                details:nil]);
     return;
   }
-  try {
-    auto renderTarget = std::make_unique<MacRenderTarget>();
-    MacRenderTarget* renderTargetPointer = renderTarget.get();
-    _session->value.SetRenderTarget(std::move(renderTarget));
-    _renderTarget = renderTargetPointer;
-    ++_graphicsContextGeneration;
-    result(@{ @"graphicsContextGeneration" : @(_graphicsContextGeneration) });
-  } catch (const std::exception& exception) {
-    result([FlutterError errorWithCode:@"vtk_context_failed"
-                               message:ExceptionMessage(exception)
-                               details:nil]);
+  VtkFlutterFrameCallbacksV2 callbacks = [self frameCallbacks];
+  VtkFlutterStatus status{};
+  VtkFlutterTextureTarget* newTarget = nullptr;
+  int32_t code = _coreApi->texture_target_create(&callbacks, &newTarget, &status);
+  if (code != VTK_FLUTTER_STATUS_OK) {
+    result(StatusError(@"recreate texture target", code, status));
+    return;
+  }
+  status = {};
+  code = _coreApi->session_detach_texture_target(_session, _textureTarget, &status);
+  if (code != VTK_FLUTTER_STATUS_OK) {
+    VtkFlutterStatus destroyStatus{};
+    _coreApi->texture_target_destroy(newTarget, &destroyStatus);
+    result(StatusError(@"detach texture target", code, status));
+    return;
+  }
+  status = {};
+  code = _coreApi->session_attach_texture_target(_session, newTarget, &status);
+  if (code != VTK_FLUTTER_STATUS_OK) {
+    VtkFlutterStatus restoreStatus{};
+    _coreApi->session_attach_texture_target(_session, _textureTarget, &restoreStatus);
+    VtkFlutterStatus destroyStatus{};
+    _coreApi->texture_target_destroy(newTarget, &destroyStatus);
+    result(StatusError(@"attach recreated texture target", code, status));
+    return;
+  }
+  VtkFlutterTextureTarget* oldTarget = _textureTarget;
+  _textureTarget = newTarget;
+  VtkFlutterStatus destroyStatus{};
+  code = _coreApi->texture_target_destroy(oldTarget, &destroyStatus);
+  if (code != VTK_FLUTTER_STATUS_OK) {
+    result(StatusError(@"destroy replaced texture target", code, destroyStatus));
+    return;
+  }
+  ++_graphicsContextGeneration;
+  result(@{ @"graphicsContextGeneration" : @(_graphicsContextGeneration) });
+}
+
+- (int32_t)beginFrame:(const VtkFlutterViewport*)viewport
+                frame:(VtkFlutterCpuFrameV2*)frame
+               status:(VtkFlutterStatus*)status {
+  @synchronized(self) {
+    if (viewport == nullptr || frame == nullptr || viewport->width <= 0 ||
+        viewport->height <= 0) {
+      SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+                "macOS begin_frame received an invalid viewport or frame");
+      return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
+    }
+    if (_frameLocked || _inProgressPixelBuffer != nullptr) {
+      SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
+                "macOS frame storage is already locked");
+      return VTK_FLUTTER_STATUS_INVALID_STATE;
+    }
+    if (_pixelBufferPool == nullptr || _poolWidth != viewport->width ||
+        _poolHeight != viewport->height) {
+      if (_pixelBufferPool != nullptr) CVPixelBufferPoolRelease(_pixelBufferPool);
+      _pixelBufferPool = nullptr;
+      NSDictionary* poolAttributes = @{
+        (id)kCVPixelBufferPoolMinimumBufferCountKey : @2,
+      };
+      NSDictionary* pixelAttributes = @{
+        (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+        (id)kCVPixelBufferWidthKey : @(viewport->width),
+        (id)kCVPixelBufferHeightKey : @(viewport->height),
+        (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
+        (id)kCVPixelBufferCGImageCompatibilityKey : @YES,
+        (id)kCVPixelBufferCGBitmapContextCompatibilityKey : @YES,
+      };
+      CVReturn poolResult = CVPixelBufferPoolCreate(
+          kCFAllocatorDefault, (__bridge CFDictionaryRef)poolAttributes,
+          (__bridge CFDictionaryRef)pixelAttributes, &_pixelBufferPool);
+      if (poolResult != kCVReturnSuccess) {
+        SetStatus(status, VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
+                  "Could not create the macOS pixel buffer pool");
+        return VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE;
+      }
+      _poolWidth = viewport->width;
+      _poolHeight = viewport->height;
+    }
+
+    CVPixelBufferRef pixelBuffer = nullptr;
+    CVReturn createResult =
+        CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, _pixelBufferPool,
+                                           &pixelBuffer);
+    if (createResult != kCVReturnSuccess || pixelBuffer == nullptr) {
+      SetStatus(status, VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
+                "Could not acquire an macOS pixel buffer");
+      return VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE;
+    }
+    CVReturn lockResult = CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+    if (lockResult != kCVReturnSuccess) {
+      CVPixelBufferRelease(pixelBuffer);
+      SetStatus(status, VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
+                "Could not lock the macOS pixel buffer");
+      return VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE;
+    }
+
+    _inProgressPixelBuffer = pixelBuffer;
+    _frameLocked = YES;
+    *frame = VtkFlutterCpuFrameV2{
+        .struct_size = sizeof(VtkFlutterCpuFrameV2),
+        .version = VTK_FLUTTER_CPU_FRAME_VERSION_2,
+        .pixels = static_cast<uint8_t*>(CVPixelBufferGetBaseAddress(pixelBuffer)),
+        .capacity_bytes = CVPixelBufferGetDataSize(pixelBuffer),
+        .row_bytes = CVPixelBufferGetBytesPerRow(pixelBuffer),
+        .pixel_format = VTK_FLUTTER_PIXEL_FORMAT_BGRA8888,
+    };
+    return VTK_FLUTTER_STATUS_OK;
+  }
+}
+
+- (int32_t)endFrame:(const VtkFlutterMetrics*)metrics
+              status:(VtkFlutterStatus*)status {
+  static_cast<void>(metrics);
+  @synchronized(self) {
+    if (!_frameLocked || _inProgressPixelBuffer == nullptr) {
+      SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
+                "macOS end_frame has no locked pixel buffer");
+      return VTK_FLUTTER_STATUS_INVALID_STATE;
+    }
+    CVReturn unlockResult = CVPixelBufferUnlockBaseAddress(_inProgressPixelBuffer, 0);
+    _frameLocked = NO;
+    if (unlockResult != kCVReturnSuccess) {
+      CVPixelBufferRelease(_inProgressPixelBuffer);
+      _inProgressPixelBuffer = nullptr;
+      SetStatus(status, VTK_FLUTTER_STATUS_INTERNAL_ERROR,
+                "Could not unlock the completed macOS pixel buffer");
+      return VTK_FLUTTER_STATUS_INTERNAL_ERROR;
+    }
+    if (_completedPixelBuffer != nullptr) {
+      CVPixelBufferRelease(_completedPixelBuffer);
+    }
+    _completedPixelBuffer = _inProgressPixelBuffer;
+    _inProgressPixelBuffer = nullptr;
+    return VTK_FLUTTER_STATUS_OK;
+  }
+}
+
+- (void)cancelFrame {
+  @synchronized(self) {
+    if (_inProgressPixelBuffer == nullptr) return;
+    if (_frameLocked) CVPixelBufferUnlockBaseAddress(_inProgressPixelBuffer, 0);
+    _frameLocked = NO;
+    CVPixelBufferRelease(_inProgressPixelBuffer);
+    _inProgressPixelBuffer = nullptr;
+  }
+}
+
+- (void)clearFrameStorage {
+  [self cancelFrame];
+  @synchronized(self) {
+    if (_completedPixelBuffer != nullptr) {
+      CVPixelBufferRelease(_completedPixelBuffer);
+      _completedPixelBuffer = nullptr;
+    }
+    if (_pixelBufferPool != nullptr) {
+      CVPixelBufferPoolRelease(_pixelBufferPool);
+      _pixelBufferPool = nullptr;
+    }
+    _poolWidth = 0;
+    _poolHeight = 0;
   }
 }
 
 - (void)disposeSession {
+  if (_coreApi != nullptr && _session != nullptr && _textureTarget != nullptr) {
+    VtkFlutterStatus status{};
+    int32_t code =
+        _coreApi->session_detach_texture_target(_session, _textureTarget, &status);
+    if (code != VTK_FLUTTER_STATUS_OK) {
+      _coreApi->session_destroy(_session);
+      _session = nullptr;
+    }
+  }
+  if (_coreApi != nullptr && _textureTarget != nullptr) {
+    VtkFlutterStatus destroyStatus{};
+    _coreApi->texture_target_destroy(_textureTarget, &destroyStatus);
+  }
+  if (_coreApi != nullptr && _session != nullptr) {
+    _coreApi->session_destroy(_session);
+  }
+  _session = nullptr;
+  _textureTarget = nullptr;
+  _coreApi = nullptr;
+  [self clearFrameStorage];
   if (_textureId > 0) [_registrar.textures unregisterTexture:_textureId];
   _textureId = -1;
   [_texture clear];
   _texture = nil;
-  _renderTarget = nullptr;
-  _session.reset();
   _viewport = {};
   _frameId = 0;
   _graphicsContextGeneration = 0;

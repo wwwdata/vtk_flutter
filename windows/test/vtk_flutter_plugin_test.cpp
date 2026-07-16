@@ -5,6 +5,8 @@
 
 #include <vtk_flutter.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -14,6 +16,7 @@
 
 #include "vtk_flutter_codec.h"
 #include "vtk_flutter_plugin.h"
+#include "windows_frame_target.h"
 
 namespace vtk_flutter::test {
 namespace {
@@ -37,6 +40,15 @@ EncodableValue Viewport(int width, int height) {
   });
 }
 
+EncodableValue SessionArguments(int width, int height,
+                                std::int64_t core_api_address) {
+  return EncodableValue(EncodableMap{
+      {Key("width"), EncodableValue(width)},
+      {Key("height"), EncodableValue(height)},
+      {Key("coreApiAddress"), EncodableValue(core_api_address)},
+  });
+}
+
 EncodableValue CameraRequest(int mode, double zoom) {
   return EncodableValue(EncodableMap{
       {Key("mode"), EncodableValue(mode)},
@@ -46,6 +58,83 @@ EncodableValue CameraRequest(int mode, double zoom) {
       {Key("cameraElevationDegrees"), EncodableValue(18.0)},
       {Key("cameraZoom"), EncodableValue(zoom)},
   });
+}
+
+void VTK_FLUTTER_CALL StatusClear(VtkFlutterStatus *status) {
+  if (status != nullptr) {
+    *status = {};
+  }
+}
+
+std::int32_t VTK_FLUTTER_CALL SessionCreate(VtkFlutterSession **,
+                                            VtkFlutterStatus *) {
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+void VTK_FLUTTER_CALL SessionDestroy(VtkFlutterSession *) {}
+
+std::int32_t VTK_FLUTTER_CALL ValidateVolume(const VtkFlutterVolume *,
+                                             VtkFlutterStatus *) {
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+std::int32_t VTK_FLUTTER_CALL SessionSetVolume(VtkFlutterSession *,
+                                               const VtkFlutterVolume *,
+                                               VtkFlutterStatus *) {
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+std::int32_t VTK_FLUTTER_CALL
+ValidateRenderRequest(const VtkFlutterRenderRequest *, VtkFlutterStatus *) {
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+std::int32_t VTK_FLUTTER_CALL SessionRender(VtkFlutterSession *,
+                                            const VtkFlutterRenderRequest *,
+                                            VtkFlutterMetrics *,
+                                            VtkFlutterStatus *) {
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+std::int32_t VTK_FLUTTER_CALL AttachTarget(VtkFlutterSession *,
+                                           VtkFlutterTextureTarget *,
+                                           VtkFlutterStatus *) {
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+std::int32_t VTK_FLUTTER_CALL DetachTarget(VtkFlutterSession *,
+                                           VtkFlutterTextureTarget *,
+                                           VtkFlutterStatus *) {
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+std::int32_t VTK_FLUTTER_CALL TargetCreate(const VtkFlutterFrameCallbacksV2 *,
+                                           VtkFlutterTextureTarget **,
+                                           VtkFlutterStatus *) {
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+std::int32_t VTK_FLUTTER_CALL TargetDestroy(VtkFlutterTextureTarget *,
+                                            VtkFlutterStatus *) {
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+VtkFlutterCoreApiV2 CompleteCoreApi() {
+  return {
+      sizeof(VtkFlutterCoreApiV2),
+      VTK_FLUTTER_CORE_API_VERSION_2,
+      StatusClear,
+      SessionCreate,
+      SessionDestroy,
+      ValidateVolume,
+      SessionSetVolume,
+      ValidateRenderRequest,
+      SessionRender,
+      AttachTarget,
+      DetachTarget,
+      TargetCreate,
+      TargetDestroy,
+  };
 }
 
 } // namespace
@@ -73,6 +162,109 @@ TEST(VtkFlutterCodec, DecodesBoundedViewport) {
 
   const auto invalid = Viewport(0, 320);
   EXPECT_THROW(windows::DecodeViewport(&invalid), std::invalid_argument);
+}
+
+TEST(VtkFlutterCodec, RequiresPositiveCoreApiAddress) {
+  const auto api = CompleteCoreApi();
+  const auto valid = SessionArguments(
+      640, 320,
+      static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(&api)));
+  const auto zero = SessionArguments(640, 320, 0);
+
+  EXPECT_EQ(windows::DecodeCoreApiAddress(&valid),
+            reinterpret_cast<std::uintptr_t>(&api));
+  EXPECT_THROW(windows::DecodeCoreApiAddress(&zero), std::invalid_argument);
+  const auto missing = Viewport(640, 320);
+  EXPECT_THROW(windows::DecodeCoreApiAddress(&missing), std::invalid_argument);
+}
+
+TEST(VtkFlutterCoreApi, ValidatesVersionSizeAndCompleteTable) {
+  auto api = CompleteCoreApi();
+  EXPECT_EQ(
+      &windows::ValidateCoreApiAddress(reinterpret_cast<std::uintptr_t>(&api)),
+      &api);
+
+  api.version = VTK_FLUTTER_CORE_API_VERSION_2 + 1;
+  EXPECT_THROW(
+      windows::ValidateCoreApiAddress(reinterpret_cast<std::uintptr_t>(&api)),
+      std::invalid_argument);
+  api = CompleteCoreApi();
+  api.struct_size = offsetof(VtkFlutterCoreApiV2, texture_target_destroy);
+  EXPECT_THROW(
+      windows::ValidateCoreApiAddress(reinterpret_cast<std::uintptr_t>(&api)),
+      std::invalid_argument);
+  api = CompleteCoreApi();
+  api.texture_target_destroy = nullptr;
+  EXPECT_THROW(
+      windows::ValidateCoreApiAddress(reinterpret_cast<std::uintptr_t>(&api)),
+      std::invalid_argument);
+}
+
+TEST(WindowsFrameTarget, PublishesTopDownRgbaStorageOnlyOnEnd) {
+  windows::WindowsFrameTarget target;
+  auto callbacks = target.Callbacks();
+  const VtkFlutterViewport viewport{2, 2};
+  VtkFlutterCpuFrameV2 frame{};
+  VtkFlutterStatus status{};
+
+  ASSERT_EQ(
+      callbacks.begin_frame(callbacks.user_data, &viewport, &frame, &status),
+      VTK_FLUTTER_STATUS_OK);
+  EXPECT_EQ(frame.struct_size, sizeof(VtkFlutterCpuFrameV2));
+  EXPECT_EQ(frame.version, VTK_FLUTTER_CPU_FRAME_VERSION_2);
+  EXPECT_EQ(frame.row_bytes, 8U);
+  EXPECT_EQ(frame.capacity_bytes, 16U);
+  EXPECT_EQ(frame.pixel_format, VTK_FLUTTER_PIXEL_FORMAT_RGBA8888);
+  ASSERT_NE(frame.pixels, nullptr);
+  EXPECT_EQ(target.LatestFrame(), nullptr);
+
+  const std::vector<std::uint8_t> top_down_pixels{
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+  };
+  std::copy(top_down_pixels.begin(), top_down_pixels.end(), frame.pixels);
+  VtkFlutterMetrics metrics{};
+  ASSERT_EQ(callbacks.end_frame(callbacks.user_data, &metrics, &status),
+            VTK_FLUTTER_STATUS_OK);
+
+  const auto published = target.LatestFrame();
+  ASSERT_NE(published, nullptr);
+  EXPECT_EQ(published->id, 1);
+  EXPECT_EQ(published->width, 2);
+  EXPECT_EQ(published->height, 2);
+  EXPECT_EQ(published->row_bytes, 8U);
+  EXPECT_EQ(published->pixels, top_down_pixels);
+}
+
+TEST(WindowsFrameTarget, CancelDiscardsPendingStorageWithoutPublishing) {
+  windows::WindowsFrameTarget target;
+  auto callbacks = target.Callbacks();
+  const VtkFlutterViewport viewport{1, 1};
+  VtkFlutterCpuFrameV2 first{};
+  VtkFlutterStatus status{};
+  VtkFlutterMetrics metrics{};
+
+  ASSERT_EQ(
+      callbacks.begin_frame(callbacks.user_data, &viewport, &first, &status),
+      VTK_FLUTTER_STATUS_OK);
+  std::fill_n(first.pixels, 4, std::uint8_t{7});
+  ASSERT_EQ(callbacks.end_frame(callbacks.user_data, &metrics, &status),
+            VTK_FLUTTER_STATUS_OK);
+  const auto published = target.LatestFrame();
+
+  VtkFlutterCpuFrameV2 cancelled{};
+  ASSERT_EQ(callbacks.begin_frame(callbacks.user_data, &viewport, &cancelled,
+                                  &status),
+            VTK_FLUTTER_STATUS_OK);
+  std::fill_n(cancelled.pixels, 4, std::uint8_t{9});
+  callbacks.cancel_frame(callbacks.user_data);
+
+  EXPECT_EQ(target.LatestFrame(), published);
+  EXPECT_EQ(target.SubmittedFrameId(), 1);
+  VtkFlutterCpuFrameV2 replacement{};
+  EXPECT_EQ(callbacks.begin_frame(callbacks.user_data, &viewport, &replacement,
+                                  &status),
+            VTK_FLUTTER_STATUS_OK);
+  callbacks.cancel_frame(callbacks.user_data);
 }
 
 TEST(VtkFlutterCodec, PreservesCameraZoomForBothVolumeModes) {
@@ -162,7 +354,21 @@ TEST(VtkFlutterPlugin, UsesSessionChannelContractWithoutRegistrar) {
 
   EXPECT_EQ(std::get<std::int64_t>(ValueAt(capabilities, "maxVolumeBytes")),
             256LL * 1024LL * 1024LL);
-  EXPECT_EQ(vtk_flutter_abi_version(), VTK_FLUTTER_ABI_VERSION);
+}
+
+TEST(VtkFlutterPlugin, RejectsCreateSessionWithoutCoreApiAddress) {
+  VtkFlutterPlugin plugin;
+  std::string error_code;
+  const auto arguments = Viewport(640, 320);
+  plugin.HandleMethodCall(
+      MethodCall("createSession", std::make_unique<EncodableValue>(arguments)),
+      std::make_unique<MethodResultFunctions<>>(
+          nullptr,
+          [&error_code](const std::string &code, const std::string &,
+                        const EncodableValue *) { error_code = code; },
+          nullptr));
+
+  EXPECT_EQ(error_code, "ffi_abi");
 }
 
 TEST(VtkFlutterPlugin, ReportsCompleteDisposedStatus) {

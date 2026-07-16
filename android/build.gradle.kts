@@ -47,20 +47,6 @@ android {
 
     defaultConfig {
         minSdk = 24
-
-        ndk {
-            abiFilters.clear()
-            abiFilters += "arm64-v8a"
-        }
-
-        externalNativeBuild {
-            cmake {
-                arguments += listOf(
-                    "-DVTK_FLUTTER_NATIVE_DIR=${file("../native")}",
-                    "-DVTK_DIR=${file("../.dart_tool/vtk/9.5.2/android-arm64/install/lib/cmake/vtk-9.5")}",
-                )
-            }
-        }
     }
 
     externalNativeBuild {

@@ -54,7 +54,7 @@ void main() {
       expect(metrics.volumeBytes, volume.byteCount);
       expect(metrics.frameId, greaterThan(0));
       expect(metrics.residentBytes, greaterThan(metrics.volumeBytes));
-      expect(metrics.handoffMode, 'iosurface_opengl_blit');
+      expect(metrics.handoffMode, 'cpu_bgra_pixel_buffer');
     }
 
     await session.resize(VtkViewport(width: 160, height: 128));

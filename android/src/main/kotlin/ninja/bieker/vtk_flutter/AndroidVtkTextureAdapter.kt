@@ -24,6 +24,8 @@ internal class AndroidVtkTextureAdapter(
     private var textureEntry: TextureRegistry.SurfaceTextureEntry? = null
     private var surface: Surface? = null
     private var nativeHandle = 0L
+    private var nativeSessionAddress = 0L
+    private var coreApiAddress = 0L
     private var viewportWidth = 0
     private var viewportHeight = 0
     private var initializing = false
@@ -52,6 +54,7 @@ internal class AndroidVtkTextureAdapter(
             "createSession" -> createSession(call, result)
             "setVolume" -> setVolume(call, result)
             "render" -> render(call, result)
+            "presentFrame" -> presentFrame(result)
             "status" -> status(result)
             "resize" -> resize(call, result)
             "recreateGraphicsContext" -> recreateGraphicsContext(result)
@@ -77,21 +80,48 @@ internal class AndroidVtkTextureAdapter(
 
     private fun createSession(call: MethodCall, result: MethodChannel.Result) {
         val viewport = readViewport(call, result) ?: return
-        createSession(viewport = viewport, result = result)
+        val address = readCoreApiAddress(call.arguments)
+        if (address == null) {
+            result.error(
+                "invalid_core_api",
+                "A positive VTK core API address is required",
+                null,
+            )
+            return
+        }
+        createSession(viewport = viewport, coreApiAddress = address, result = result)
     }
 
-    private fun createSession(viewport: Viewport, result: MethodChannel.Result) {
+    private fun createSession(
+        viewport: Viewport,
+        coreApiAddress: Long,
+        result: MethodChannel.Result,
+    ) {
         if (closed) {
             result.disposedError()
             return
         }
         if (disposing || initializing) {
-            pendingCreations.add(PendingCreation(viewport = viewport, result = result))
+            pendingCreations.add(
+                PendingCreation(
+                    viewport = viewport,
+                    coreApiAddress = coreApiAddress,
+                    result = result,
+                ),
+            )
             return
         }
         textureEntry?.let { entry ->
+            if (this.coreApiAddress != coreApiAddress || nativeSessionAddress <= 0) {
+                result.error(
+                    "invalid_core_api",
+                    "The active session belongs to a different VTK core API",
+                    null,
+                )
+                return
+            }
             resizeExistingSession(viewport = viewport, result = result) {
-                result.success(mapOf("textureId" to entry.id()))
+                result.success(sessionResult(entry.id()))
             }
             return
         }
@@ -116,13 +146,21 @@ internal class AndroidVtkTextureAdapter(
                     )
                     drainPendingCreations()
                 } else {
-                    initializeTexture(viewport = viewport, result = result)
+                    initializeTexture(
+                        viewport = viewport,
+                        coreApiAddress = coreApiAddress,
+                        result = result,
+                    )
                 }
             }
         }
     }
 
-    private fun initializeTexture(viewport: Viewport, result: MethodChannel.Result) {
+    private fun initializeTexture(
+        viewport: Viewport,
+        coreApiAddress: Long,
+        result: MethodChannel.Result,
+    ) {
         val entry = textures.createSurfaceTexture()
         entry.surfaceTexture().setDefaultBufferSize(viewport.width, viewport.height)
         val epoch = presentationEpoch.incrementAndGet()
@@ -140,8 +178,18 @@ internal class AndroidVtkTextureAdapter(
         resetFrameState()
         worker.execute {
             try {
-                nativeHandle = nativeCreate(renderSurface, viewport.width, viewport.height)
-                check(nativeHandle != 0L) { "Native VTK initialization returned no session" }
+                val handles = nativeCreate(
+                    coreApiAddress,
+                    renderSurface,
+                    viewport.width,
+                    viewport.height,
+                )
+                check(handles.size == nativeHandleCount && handles.all { it > 0L }) {
+                    "Native VTK initialization returned malformed handles"
+                }
+                nativeHandle = handles[adapterHandleIndex]
+                nativeSessionAddress = handles[sessionAddressIndex]
+                this.coreApiAddress = coreApiAddress
                 postResult {
                     initializing = false
                     if (closed || disposing) {
@@ -149,7 +197,7 @@ internal class AndroidVtkTextureAdapter(
                     } else {
                         ready = true
                         graphicsContextGeneration.set(1)
-                        result.success(mapOf("textureId" to entry.id()))
+                        result.success(sessionResult(entry.id()))
                     }
                     if (!disposing) drainPendingCreations()
                 }
@@ -234,6 +282,23 @@ internal class AndroidVtkTextureAdapter(
         }
     }
 
+    private fun presentFrame(result: MethodChannel.Result) {
+        if (closed || disposing || !ready || nativeSessionAddress <= 0) {
+            result.disposedError()
+            return
+        }
+        val frameId = submittedFrameId.incrementAndGet()
+        result.success(
+            mapOf(
+                "frameId" to frameId,
+                "presentedFrameCount" to presentedFrameCount.get(),
+                "presentedFrameId" to presentedFrameId.get(),
+                "graphicsContextGeneration" to graphicsContextGeneration.get(),
+                "handoffMode" to handoffMode,
+            ),
+        )
+    }
+
     private fun buildFrameMetrics(metrics: DoubleArray, frameId: Long): Map<String, Any> {
         check(metrics.size == nativeMetricCount) { "Native VTK returned malformed metrics" }
         val values = mutableMapOf<String, Any>(
@@ -253,7 +318,7 @@ internal class AndroidVtkTextureAdapter(
             "presentedFrameCount" to presentedFrameCount.get(),
             "presentedFrameId" to presentedFrameId.get(),
             "graphicsContextGeneration" to graphicsContextGeneration.get(),
-            "handoffMode" to "surface_texture_egl_swap",
+            "handoffMode" to handoffMode,
         )
         if (metrics[metricPatientToClipValid] != 0.0) {
             values["patientToClip"] = metrics
@@ -408,7 +473,11 @@ internal class AndroidVtkTextureAdapter(
             if (closed) {
                 creation.result.disposedError()
             } else {
-                createSession(viewport = creation.viewport, result = creation.result)
+                createSession(
+                    viewport = creation.viewport,
+                    coreApiAddress = creation.coreApiAddress,
+                    result = creation.result,
+                )
             }
         }
     }
@@ -428,6 +497,8 @@ internal class AndroidVtkTextureAdapter(
         textureEntry = null
         viewportWidth = 0
         viewportHeight = 0
+        nativeSessionAddress = 0
+        coreApiAddress = 0
         ready = false
         pendingTextureUnregistrations = 0
         graphicsContextGeneration.set(0)
@@ -444,7 +515,17 @@ internal class AndroidVtkTextureAdapter(
         mainHandler.post(completion)
     }
 
-    private external fun nativeCreate(surface: Surface, width: Int, height: Int): Long
+    private fun sessionResult(textureId: Long) = mapOf(
+        "textureId" to textureId,
+        "nativeSessionAddress" to nativeSessionAddress,
+    )
+
+    private external fun nativeCreate(
+        coreApiAddress: Long,
+        surface: Surface,
+        width: Int,
+        height: Int,
+    ): LongArray
 
     private external fun nativeSetVolume(
         handle: Long,
@@ -484,6 +565,7 @@ internal class AndroidVtkTextureAdapter(
 
     private data class PendingCreation(
         val viewport: Viewport,
+        val coreApiAddress: Long,
         val result: MethodChannel.Result,
     )
 
@@ -518,7 +600,11 @@ internal class AndroidVtkTextureAdapter(
         const val metricFrameHeight = 8
         const val metricPatientToClipValid = 9
         const val metricPatientToClipStart = 10
-        const val graphicsSupport = "OpenGL ES 3 / EGL SurfaceTexture"
+        const val nativeHandleCount = 2
+        const val adapterHandleIndex = 0
+        const val sessionAddressIndex = 1
+        const val graphicsSupport = "CPU RGBA / ANativeWindow SurfaceTexture"
+        const val handoffMode = "surface_texture_cpu_rgba"
         val zeroVector = doubleArrayOf(0.0, 0.0, 0.0)
         val defaultNormal = doubleArrayOf(0.0, 0.0, 1.0)
         val noResult = Any()
@@ -526,6 +612,18 @@ internal class AndroidVtkTextureAdapter(
 }
 
 private fun Double.millisecondsToMicroseconds(): Long = (this * 1_000.0).roundToLong()
+
+internal fun readCoreApiAddress(arguments: Any?): Long? {
+    val value = (arguments as? Map<*, *>)?.get("coreApiAddress")
+    val address = when (value) {
+        is Byte -> value.toLong()
+        is Short -> value.toLong()
+        is Int -> value.toLong()
+        is Long -> value
+        else -> return null
+    }
+    return address.takeIf { it > 0L }
+}
 
 private fun MethodChannel.Result.disposedError() {
     error("vtk_disposed", "The Android VTK session is disposed", null)

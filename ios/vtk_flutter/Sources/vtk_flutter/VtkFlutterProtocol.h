@@ -5,6 +5,9 @@
 NS_ASSUME_NONNULL_BEGIN
 
 NSDictionary<NSString*, id>* VtkFlutterCapabilitiesMap(void);
+BOOL VtkFlutterDecodeCoreApi(id _Nullable arguments,
+                             const VtkFlutterCoreApiV2* _Nullable* _Nonnull coreApi,
+                             NSString* _Nullable* _Nullable errorMessage);
 BOOL VtkFlutterDecodeViewport(id _Nullable arguments, VtkFlutterViewport* viewport,
                               NSString* _Nullable* _Nullable errorMessage);
 BOOL VtkFlutterDecodeVolume(id _Nullable arguments, VtkFlutterVolume* volume,

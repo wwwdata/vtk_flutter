@@ -2,7 +2,10 @@
 
 #import <Flutter/Flutter.h>
 
+#include <cstddef>
 #include <cstring>
+#include <cstdint>
+#include <limits>
 
 namespace {
 BOOL Fail(NSString* message, NSString** errorMessage) {
@@ -13,6 +16,27 @@ BOOL Fail(NSString* message, NSString** errorMessage) {
 }
 
 BOOL IsNumber(id value) { return [value isKindOfClass:NSNumber.class]; }
+
+BOOL IsNonBooleanNumber(id value) {
+  return IsNumber(value) &&
+         CFGetTypeID((__bridge CFTypeRef)value) != CFBooleanGetTypeID();
+}
+
+constexpr std::size_t kRequiredCoreApiSize =
+    offsetof(VtkFlutterCoreApiV2, texture_target_destroy) +
+    sizeof(VtkFlutterCoreApiV2::texture_target_destroy);
+
+BOOL HasRequiredCoreFunctions(const VtkFlutterCoreApiV2* api) {
+  return api->status_clear != nullptr && api->session_create != nullptr &&
+         api->session_destroy != nullptr && api->validate_volume != nullptr &&
+         api->session_set_volume != nullptr &&
+         api->validate_render_request != nullptr &&
+         api->session_render != nullptr &&
+         api->session_attach_texture_target != nullptr &&
+         api->session_detach_texture_target != nullptr &&
+         api->texture_target_create != nullptr &&
+         api->texture_target_destroy != nullptr;
+}
 
 double NumberOr(NSDictionary* values, NSString* key, double fallback) {
   id value = values[key];
@@ -26,6 +50,35 @@ NSDictionary<NSString*, id>* VtkFlutterCapabilitiesMap(void) {
     @"maxVolumeBytes" : @(256ULL * 1024ULL * 1024ULL),
     @"supportsExternalTexture" : @YES,
   };
+}
+
+BOOL VtkFlutterDecodeCoreApi(id arguments,
+                             const VtkFlutterCoreApiV2** coreApi,
+                             NSString** errorMessage) {
+  if (coreApi == nullptr || ![arguments isKindOfClass:NSDictionary.class]) {
+    return Fail(@"Core API arguments are required", errorMessage);
+  }
+  id value = ((NSDictionary*)arguments)[@"coreApiAddress"];
+  if (!IsNonBooleanNumber(value) || [value longLongValue] <= 0) {
+    return Fail(@"coreApiAddress must be a positive integer", errorMessage);
+  }
+  unsigned long long address = [value unsignedLongLongValue];
+  if (address > std::numeric_limits<uintptr_t>::max()) {
+    return Fail(@"coreApiAddress is outside the native address range", errorMessage);
+  }
+  const auto* api = reinterpret_cast<const VtkFlutterCoreApiV2*>(
+      static_cast<uintptr_t>(address));
+  if (api->version != VTK_FLUTTER_CORE_API_VERSION_2) {
+    return Fail(@"Unsupported VTK core API version", errorMessage);
+  }
+  if (api->struct_size < kRequiredCoreApiSize) {
+    return Fail(@"VTK core API table is too small", errorMessage);
+  }
+  if (!HasRequiredCoreFunctions(api)) {
+    return Fail(@"VTK core API table is incomplete", errorMessage);
+  }
+  *coreApi = api;
+  return YES;
 }
 
 BOOL VtkFlutterDecodeViewport(id arguments, VtkFlutterViewport* viewport,

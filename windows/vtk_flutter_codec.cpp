@@ -115,6 +115,17 @@ VtkFlutterViewport DecodeViewport(const flutter::EncodableValue *arguments) {
           static_cast<std::int32_t>(*height)};
 }
 
+std::uintptr_t DecodeCoreApiAddress(const flutter::EncodableValue *arguments) {
+  const auto &values = RequireMap(arguments, "Session arguments are required");
+  const auto address = ReadInteger(Find(values, "coreApiAddress"));
+  if (!address || *address <= 0 ||
+      static_cast<std::uint64_t>(*address) >
+          std::numeric_limits<std::uintptr_t>::max()) {
+    throw std::invalid_argument("coreApiAddress must be a positive pointer");
+  }
+  return static_cast<std::uintptr_t>(*address);
+}
+
 OwnedVolume DecodeVolume(const flutter::EncodableValue *arguments) {
   const auto &values = RequireMap(arguments, "Volume arguments are required");
   const auto width = ReadInteger(Find(values, "width"));

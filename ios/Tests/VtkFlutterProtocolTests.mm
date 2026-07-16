@@ -5,6 +5,36 @@
 
 #include <vector>
 
+namespace {
+template <typename Function>
+Function NonNullFunction() {
+  return reinterpret_cast<Function>(static_cast<uintptr_t>(1));
+}
+
+VtkFlutterCoreApiV2 CompleteCoreApi() {
+  VtkFlutterCoreApiV2 api{};
+  api.struct_size = sizeof(api);
+  api.version = VTK_FLUTTER_CORE_API_VERSION_2;
+  api.status_clear = NonNullFunction<decltype(api.status_clear)>();
+  api.session_create = NonNullFunction<decltype(api.session_create)>();
+  api.session_destroy = NonNullFunction<decltype(api.session_destroy)>();
+  api.validate_volume = NonNullFunction<decltype(api.validate_volume)>();
+  api.session_set_volume = NonNullFunction<decltype(api.session_set_volume)>();
+  api.validate_render_request =
+      NonNullFunction<decltype(api.validate_render_request)>();
+  api.session_render = NonNullFunction<decltype(api.session_render)>();
+  api.session_attach_texture_target =
+      NonNullFunction<decltype(api.session_attach_texture_target)>();
+  api.session_detach_texture_target =
+      NonNullFunction<decltype(api.session_detach_texture_target)>();
+  api.texture_target_create =
+      NonNullFunction<decltype(api.texture_target_create)>();
+  api.texture_target_destroy =
+      NonNullFunction<decltype(api.texture_target_destroy)>();
+  return api;
+}
+}  // namespace
+
 @interface VtkFlutterProtocolTests : XCTestCase
 @end
 
@@ -24,6 +54,31 @@
   XCTAssertEqualObjects(capabilities[@"renderModes"], (@[ @1, @2, @3 ]));
   XCTAssertEqualObjects(capabilities[@"maxVolumeBytes"], @(256 * 1024 * 1024));
   XCTAssertEqualObjects(capabilities[@"supportsExternalTexture"], @YES);
+}
+
+- (void)testValidatesTheV2CoreApiAddressAndTable {
+  const VtkFlutterCoreApiV2* decoded = nullptr;
+  NSString* error = nil;
+  XCTAssertFalse(VtkFlutterDecodeCoreApi(@{}, &decoded, &error));
+  XCTAssertEqualObjects(error, @"coreApiAddress must be a positive integer");
+
+  VtkFlutterCoreApiV2 api = CompleteCoreApi();
+  NSNumber* address = @(
+      static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&api)));
+  XCTAssertTrue(VtkFlutterDecodeCoreApi(@{ @"coreApiAddress" : address },
+                                        &decoded, &error));
+  XCTAssertEqual(decoded, &api);
+
+  api.version = VTK_FLUTTER_CORE_API_VERSION_2 + 1;
+  XCTAssertFalse(VtkFlutterDecodeCoreApi(@{ @"coreApiAddress" : address },
+                                         &decoded, &error));
+  XCTAssertEqualObjects(error, @"Unsupported VTK core API version");
+
+  api.version = VTK_FLUTTER_CORE_API_VERSION_2;
+  api.struct_size = offsetof(VtkFlutterCoreApiV2, texture_target_destroy);
+  XCTAssertFalse(VtkFlutterDecodeCoreApi(@{ @"coreApiAddress" : address },
+                                         &decoded, &error));
+  XCTAssertEqualObjects(error, @"VTK core API table is too small");
 }
 
 - (void)testDecodesDartViewportAndEveryRenderMap {

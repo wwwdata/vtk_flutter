@@ -25,6 +25,7 @@ struct OwnedVolume {
 
 flutter::EncodableMap CapabilitiesMap();
 VtkFlutterViewport DecodeViewport(const flutter::EncodableValue *arguments);
+std::uintptr_t DecodeCoreApiAddress(const flutter::EncodableValue *arguments);
 OwnedVolume DecodeVolume(const flutter::EncodableValue *arguments);
 VtkFlutterRenderRequest
 DecodeRenderRequest(const flutter::EncodableValue *arguments,

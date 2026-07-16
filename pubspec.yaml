@@ -56,25 +56,19 @@ flutter:
   # using method channels.
   # The Android 'package' specifies package in which the registered class is.
   # This is required for using method channels on Android.
-  # The 'ffiPlugin' specifies that native code should be built and bundled.
-  # This is required for using `dart:ffi`.
-  # All these are used by the tooling to maintain consistency when
-  # adding or updating assets for this project.
+  # The VTK core is supplied by the Dart native-assets build hook. Platform
+  # plugins compile only the Flutter texture adapter and method-channel glue.
   plugin:
     platforms:
       android:
         package: ninja.bieker.vtk_flutter
         pluginClass: VtkFlutterPlugin
-        ffiPlugin: true
       ios:
         pluginClass: VtkFlutterPlugin
-        ffiPlugin: true
       macos:
         pluginClass: VtkFlutterPlugin
-        ffiPlugin: true
       windows:
         pluginClass: VtkFlutterPluginCApi
-        ffiPlugin: true
       web:
         pluginClass: VtkFlutterWeb
         fileName: vtk_flutter_web.dart

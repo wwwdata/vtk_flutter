@@ -23,8 +23,12 @@
 #include <utility>
 
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <dispatch/dispatch.h>
 #include <pthread.h>
+#if TARGET_OS_OSX
+#include <vtkCocoaRenderWindow.h>
+#endif
 #endif
 
 namespace vtk_flutter {
@@ -224,6 +228,14 @@ private:
       throw std::runtime_error("VTK could not create a render window");
     }
     window_->SetWindowName("vtk_flutter_code_asset");
+#if defined(__APPLE__) && TARGET_OS_OSX
+    if (auto *cocoa_window = vtkCocoaRenderWindow::SafeDownCast(window_)) {
+      // Offscreen readback needs Cocoa's OpenGL context, but not its hidden
+      // NSWindow/vtkCocoaGLView pair. Avoiding that pair also keeps AppKit view
+      // lifetime independent from this code asset's render-target lifetime.
+      cocoa_window->SetConnectContextToNSView(false);
+    }
+#endif
     window_->SetShowWindow(false);
     window_->SetUseOffScreenBuffers(true);
     window_->SetAlphaBitPlanes(1);
