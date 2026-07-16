@@ -119,6 +119,19 @@ if(BUILD_TESTING)
     MODULES ${VTK_LIBRARIES}
   )
 
-  add_test(NAME vtk_flutter_native_core_contract COMMAND vtk_flutter_core_contract_test)
-  set_tests_properties(vtk_flutter_native_core_contract PROPERTIES TIMEOUT 15)
+  set(
+    VTK_FLUTTER_CONTRACT_CASES
+    cpu_frame_copy
+    public_c_and_legacy_migration
+    core_table_lifecycle
+    real_offscreen_render
+    callback_failures
+    same_session_reentry
+    concurrent_renders
+  )
+  foreach(contract_case IN LISTS VTK_FLUTTER_CONTRACT_CASES)
+    set(test_name vtk_flutter_native_core_contract_${contract_case})
+    add_test(NAME ${test_name} COMMAND vtk_flutter_core_contract_test ${contract_case})
+    set_tests_properties(${test_name} PROPERTIES TIMEOUT 15)
+  endforeach()
 endif()

@@ -846,20 +846,58 @@ void TestConcurrentRendersAreSerialized() {
 }
 } // namespace
 
-int main() {
+namespace {
+struct ContractCase {
+  std::string_view name;
+  void (*run)();
+};
+
+constexpr std::array contract_cases{
+    ContractCase{"cpu_frame_copy", TestCpuFrameCopyContract},
+    ContractCase{"public_c_and_legacy_migration",
+                 TestPublicCAndLegacyMigrationContract},
+    ContractCase{"core_table_lifecycle", TestCoreTableCreationAndLifecycle},
+    ContractCase{"real_offscreen_render", TestRealOffscreenRenderingThroughC},
+    ContractCase{"callback_failures",
+                 TestCallbackFailuresExceptionsAndCancellation},
+    ContractCase{"same_session_reentry", TestSameSessionReentryIsRejected},
+    ContractCase{"concurrent_renders", TestConcurrentRendersAreSerialized},
+};
+
+int RunContractCase(const ContractCase &contract_case) {
   try {
-    TestCpuFrameCopyContract();
-    TestPublicCAndLegacyMigrationContract();
-    TestCoreTableCreationAndLifecycle();
-    TestRealOffscreenRenderingThroughC();
-    TestCallbackFailuresExceptionsAndCancellation();
-    TestSameSessionReentryIsRejected();
-    TestConcurrentRendersAreSerialized();
-    std::cout << "vtk_flutter native core contract: ok\n";
+    contract_case.run();
+    std::cout << "vtk_flutter native core contract " << contract_case.name
+              << ": ok\n";
     return EXIT_SUCCESS;
   } catch (const std::exception &exception) {
-    std::cerr << "vtk_flutter native core contract: " << exception.what()
-              << '\n';
+    std::cerr << "vtk_flutter native core contract " << contract_case.name
+              << ": " << exception.what() << '\n';
     return EXIT_FAILURE;
   }
+}
+} // namespace
+
+int main(int argc, char **argv) {
+  if (argc == 1) {
+    for (const auto &contract_case : contract_cases) {
+      if (RunContractCase(contract_case) != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+      }
+    }
+    return EXIT_SUCCESS;
+  }
+
+  if (argc == 2) {
+    const auto requested = std::string_view(argv[1]);
+    const auto contract_case = std::find_if(
+        contract_cases.begin(), contract_cases.end(),
+        [requested](const auto &candidate) { return candidate.name == requested; });
+    if (contract_case != contract_cases.end()) {
+      return RunContractCase(*contract_case);
+    }
+  }
+
+  std::cerr << "usage: vtk_flutter_core_contract_test [contract_case]\n";
+  return EXIT_FAILURE;
 }
