@@ -7,7 +7,7 @@ and a self-contained example.
 ## Current status
 
 The public Dart contract and portable VTK 9.5.2 core are implemented. Platform
-adapters are qualified independently; see [platform support](docs/platform-support.md)
+adapters are qualified independently; see [platform support](doc/platform-support.md)
 for the current evidence and limitations.
 
 ## Use the package
@@ -88,6 +88,6 @@ The package intentionally exposes three product-level rendering modes rather
 than generic bindings for arbitrary VTK C++ objects: oblique MPR, 3D volume,
 and high-visibility volume locator.
 
-See [architecture](docs/architecture.md) and the [ABI contract](docs/abi.md)
+See [architecture](doc/architecture.md) and the [ABI contract](doc/abi.md)
 before changing native code. The bounded VTK 9.6 session evaluation is recorded
-in [docs/vtk-session-evaluation.md](docs/vtk-session-evaluation.md).
+in [doc/vtk-session-evaluation.md](doc/vtk-session-evaluation.md).

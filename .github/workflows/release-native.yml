@@ -255,7 +255,7 @@ jobs:
           downloads against SHA256SUMS and the GitHub artifact attestations.
           BUILD-MANIFESTS.json records the source, toolchain, and build identity.
 
-          See docs/releasing.md in the tagged source for target details.
+          See doc/releasing.md in the tagged source for target details.
           EOF
           gh release create "$NATIVE_RELEASE_TAG" \
             --draft \

@@ -25,6 +25,6 @@ fixes from their respective projects.
 
 Native dependency releases contain `SHA256SUMS`, per-asset build manifests, and
 GitHub artifact attestations. Verify both the immutable GitHub release and the
-downloaded asset as described in `docs/releasing.md`. An attestation proves the
+downloaded asset as described in `doc/releasing.md`. An attestation proves the
 artifact's build origin; it does not by itself prove that the artifact is free
 of vulnerabilities.
