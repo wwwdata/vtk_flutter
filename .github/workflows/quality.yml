@@ -349,4 +349,4 @@ jobs:
         working-directory: example
         run: |
           flutter pub get
-          flutter build windows --debug
+          flutter build windows --debug --verbose
