@@ -60,6 +60,13 @@ target_include_directories(
   PRIVATE src
 )
 target_link_libraries(vtk_flutter_core PUBLIC ${VTK_LIBRARIES})
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  find_library(VTK_FLUTTER_OPENGLES_FRAMEWORK OpenGLES REQUIRED)
+  target_link_libraries(
+    vtk_flutter_core
+    PRIVATE ${VTK_FLUTTER_OPENGLES_FRAMEWORK}
+  )
+endif()
 set_target_properties(
   vtk_flutter_core
   PROPERTIES
