@@ -89,6 +89,8 @@ void main() {
         plan[2].arguments,
         contains('-DCMAKE_OSX_SYSROOT=iphonesimulator'),
       );
+      expect(plan[2].arguments, contains('-DAPPLE_IOS=ON'));
+      expect(plan[2].arguments, contains('-DTARGET_IPHONE_SIMULATOR=ON'));
       expect(
         plan[2].arguments,
         contains('-DVTKCompileTools_DIR=${_path('/cache', 'host-tools')}'),

@@ -77,6 +77,8 @@ switch ($Target) {
   'ios-arm64' {
     $configureArguments += @(
       '-DCMAKE_SYSTEM_NAME=iOS',
+      '-DAPPLE_IOS=ON',
+      '-DTARGET_OS_IPHONE=ON',
       '-DCMAKE_OSX_ARCHITECTURES=arm64',
       '-DCMAKE_OSX_SYSROOT=iphoneos',
       '-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0'
@@ -85,6 +87,8 @@ switch ($Target) {
   'ios-simulator-arm64' {
     $configureArguments += @(
       '-DCMAKE_SYSTEM_NAME=iOS',
+      '-DAPPLE_IOS=ON',
+      '-DTARGET_IPHONE_SIMULATOR=ON',
       '-DCMAKE_OSX_ARCHITECTURES=arm64',
       '-DCMAKE_OSX_SYSROOT=iphonesimulator',
       '-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0'
@@ -93,6 +97,8 @@ switch ($Target) {
   'ios-simulator-x64' {
     $configureArguments += @(
       '-DCMAKE_SYSTEM_NAME=iOS',
+      '-DAPPLE_IOS=ON',
+      '-DTARGET_IPHONE_SIMULATOR=ON',
       '-DCMAKE_OSX_ARCHITECTURES=x86_64',
       '-DCMAKE_OSX_SYSROOT=iphonesimulator',
       '-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0'
