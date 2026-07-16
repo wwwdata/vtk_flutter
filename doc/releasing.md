@@ -50,7 +50,9 @@ from the checksum-pinned VTK source on its designated runner.
 
 The `Release native libraries` workflow accepts only the exact
 `native-v0.1.0-dev.1` tag. It verifies that `tool/native_artifacts.dart` maps
-that tag and all target asset names before any release is published.
+that tag and all target asset names before any release is published. A
+preflight job also requires a completed successful `Quality` run for the exact
+tagged commit before allocating the release build matrix.
 
 The release assets are:
 
@@ -65,6 +67,7 @@ vtk_flutter-native-android-armeabi-v7a.zip
 vtk_flutter-native-android-x86_64.zip
 vtk_flutter-native-windows-x64.zip
 BUILD-MANIFESTS.json
+NATIVE-THIRD-PARTY-LICENSES.txt
 SHA256SUMS
 ```
 
@@ -76,8 +79,13 @@ single library, and exposes that library as a bundled code asset.
 
 `BUILD-MANIFESTS.json` records each artifact digest, size, target library,
 source checksum, toolchain, runner, workflow run, and source commit.
-`SHA256SUMS` covers every ZIP and `BUILD-MANIFESTS.json`. GitHub build
-provenance attestations cover all release assets.
+`SHA256SUMS` covers every ZIP, `BUILD-MANIFESTS.json`, and the native license
+file. GitHub build provenance attestations cover all release assets.
+
+`NATIVE-THIRD-PARTY-LICENSES.txt` reproduces the VTK and bundled dependency
+license texts that accompany the statically linked components in every
+monolithic library. It is also covered by `SHA256SUMS` and the release
+attestation.
 
 ### One-time repository setup
 

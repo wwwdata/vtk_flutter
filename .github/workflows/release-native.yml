@@ -6,6 +6,7 @@ on:
       - native-v0.1.0-dev.1
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -20,8 +21,33 @@ env:
   VTK_SOURCE_SHA256: cee64b98d270ff7302daf1ef13458dff5d5ac1ecb45d47723835f7f7d562c989
 
 jobs:
+  verify:
+    name: Verify native release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify tag, artifact contract, and successful quality run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_REF_NAME" = "$NATIVE_RELEASE_TAG"
+          grep -F "const nativeReleaseTag = '$NATIVE_RELEASE_TAG';" tool/native_artifacts.dart
+
+          successful_runs=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs?head_sha=$GITHUB_SHA&status=completed&per_page=100" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          test "$successful_runs" -gt 0
+
   build:
     name: Build ${{ matrix.target }}
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -73,9 +99,6 @@ jobs:
       - name: Verify release ref and artifact contract
         shell: bash
         run: |
-          test "$GITHUB_REF_TYPE" = "tag"
-          test "$GITHUB_REF_NAME" = "$NATIVE_RELEASE_TAG"
-          grep -F "const nativeReleaseTag = '$NATIVE_RELEASE_TAG';" tool/native_artifacts.dart
           grep -F "'${{ matrix.target }}': 'vtk_flutter-native-${{ matrix.target }}.zip'" tool/native_artifacts.dart
 
       - name: Set up Flutter
@@ -186,12 +209,21 @@ jobs:
       contents: write
       id-token: write
     steps:
+      - name: Check out tagged source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
       - name: Download native libraries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: native-*
           path: release
           merge-multiple: true
+
+      - name: Include native third-party licenses
+        shell: pwsh
+        run: Copy-Item native/THIRD_PARTY_LICENSES.txt release/NATIVE-THIRD-PARTY-LICENSES.txt
 
       - name: Create aggregate build manifest and checksums
         shell: pwsh
@@ -254,6 +286,7 @@ jobs:
           Every target ZIP contains exactly one vtk_flutter core library. Verify
           downloads against SHA256SUMS and the GitHub artifact attestations.
           BUILD-MANIFESTS.json records the source, toolchain, and build identity.
+          NATIVE-THIRD-PARTY-LICENSES.txt accompanies every native binary.
 
           See doc/releasing.md in the tagged source for target details.
           EOF
