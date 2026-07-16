@@ -9,9 +9,13 @@ const vtkArchiveUrl =
 
 const supportedPlatforms = <String>{
   'macos-arm64',
+  'macos-x64',
   'ios-arm64',
   'ios-simulator-arm64',
+  'ios-simulator-x64',
   'android-arm64',
+  'android-armeabi-v7a',
+  'android-x86_64',
   'windows-x64',
 };
 
@@ -44,9 +48,13 @@ Usage:
 
 Targets:
   macos-arm64
+  macos-x64
   ios-arm64
   ios-simulator-arm64
+  ios-simulator-x64
   android-arm64
+  android-armeabi-v7a
+  android-x86_64
   windows-x64
 
 Options:
@@ -266,6 +274,10 @@ List<String> _platformCmakeArguments({
     '-DCMAKE_OSX_ARCHITECTURES=arm64',
     '-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0',
   ],
+  'macos-x64' => [
+    '-DCMAKE_OSX_ARCHITECTURES=x86_64',
+    '-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0',
+  ],
   'ios-arm64' => [
     '-DCMAKE_SYSTEM_NAME=iOS',
     '-DCMAKE_OSX_ARCHITECTURES=arm64',
@@ -278,9 +290,27 @@ List<String> _platformCmakeArguments({
     '-DCMAKE_OSX_SYSROOT=iphonesimulator',
     '-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0',
   ],
+  'ios-simulator-x64' => [
+    '-DCMAKE_SYSTEM_NAME=iOS',
+    '-DCMAKE_OSX_ARCHITECTURES=x86_64',
+    '-DCMAKE_OSX_SYSROOT=iphonesimulator',
+    '-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0',
+  ],
   'android-arm64' => [
     '-DCMAKE_TOOLCHAIN_FILE=${_join([androidNdkDirectory ?? '<android-ndk>', 'build', 'cmake', 'android.toolchain.cmake'])}',
     '-DANDROID_ABI=arm64-v8a',
+    '-DANDROID_PLATFORM=android-27',
+    '-DANDROID_STL=c++_static',
+  ],
+  'android-armeabi-v7a' => [
+    '-DCMAKE_TOOLCHAIN_FILE=${_join([androidNdkDirectory ?? '<android-ndk>', 'build', 'cmake', 'android.toolchain.cmake'])}',
+    '-DANDROID_ABI=armeabi-v7a',
+    '-DANDROID_PLATFORM=android-27',
+    '-DANDROID_STL=c++_static',
+  ],
+  'android-x86_64' => [
+    '-DCMAKE_TOOLCHAIN_FILE=${_join([androidNdkDirectory ?? '<android-ndk>', 'build', 'cmake', 'android.toolchain.cmake'])}',
+    '-DANDROID_ABI=x86_64',
     '-DANDROID_PLATFORM=android-27',
     '-DANDROID_STL=c++_static',
   ],
@@ -311,7 +341,7 @@ final class VtkBootstrapper {
         : Directory(options.sourceDirectory!).absolute;
 
     String? androidNdkDirectory;
-    if (options.platform == 'android-arm64') {
+    if (options.platform.startsWith('android-')) {
       androidNdkDirectory = _findAndroidNdk()?.path;
       if (androidNdkDirectory == null && !options.dryRun) {
         throw StateError(
@@ -589,7 +619,7 @@ Directory _findPackageDirectory(Directory start) {
 }
 
 bool _isMobile(String platform) =>
-    platform.startsWith('ios-') || platform == 'android-arm64';
+    platform.startsWith('ios-') || platform.startsWith('android-');
 
 String _join(List<String> parts) => parts.join(Platform.pathSeparator);
 

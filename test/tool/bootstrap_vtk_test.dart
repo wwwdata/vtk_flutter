@@ -118,6 +118,34 @@ void main() {
       expect(configure, contains('-DANDROID_PLATFORM=android-27'));
     });
 
+    test('maps every additional architecture to its native toolchain', () {
+      final cases = <String, String>{
+        'macos-x64': '-DCMAKE_OSX_ARCHITECTURES=x86_64',
+        'ios-simulator-x64': '-DCMAKE_OSX_ARCHITECTURES=x86_64',
+        'android-armeabi-v7a': '-DANDROID_ABI=armeabi-v7a',
+        'android-x86_64': '-DANDROID_ABI=x86_64',
+      };
+
+      for (final MapEntry(key: platform, value: expected) in cases.entries) {
+        final plan = createBuildPlan(
+          options: BootstrapOptions(
+            platform: platform,
+            sourceDirectory: null,
+            dryRun: true,
+          ),
+          sourceDirectory: sourceDirectory,
+          cacheDirectory: cacheDirectory,
+          androidNdkDirectory: '/android/ndk',
+        );
+
+        final configureIndex =
+            platform.startsWith('android-') || platform.startsWith('ios-')
+            ? 2
+            : 0;
+        expect(plan[configureIndex].arguments, contains(expected));
+      }
+    });
+
     test('builds and installs with CMake', () {
       final plan = createBuildPlan(
         options: const BootstrapOptions(
