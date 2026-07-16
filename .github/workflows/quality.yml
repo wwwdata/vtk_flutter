@@ -11,7 +11,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Keep PR updates cancellable without allowing a stuck main run to block a
+  # newer commit indefinitely on hosted-runner shutdown.
+  group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 env:
