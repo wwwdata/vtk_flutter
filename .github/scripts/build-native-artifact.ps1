@@ -152,7 +152,9 @@ try {
     } elseif ($Target -eq 'macos-x64') {
       $testArguments += '-DCMAKE_OSX_ARCHITECTURES=x86_64', '-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0'
     } else {
-      $testArguments += '-A', 'x64'
+      # Hosted Windows runners do not expose the WGL context required by VTK's
+      # real-render contracts. The DLL and non-render contracts still run here.
+      $testArguments += '-A', 'x64', '-DVTK_FLUTTER_TEST_REAL_RENDERING=OFF'
     }
     Invoke-CMake -CommandArguments $testArguments
     Invoke-CMake -CommandArguments @('--build', $testDirectory, '--config', 'Release', '--parallel')

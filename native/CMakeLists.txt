@@ -7,6 +7,11 @@ option(
   "Build the monolithic VTK-backed core as a dynamic code asset"
   OFF
 )
+option(
+  VTK_FLUTTER_TEST_REAL_RENDERING
+  "Run native contracts that require a usable OpenGL context"
+  ON
+)
 
 function(vtk_flutter_enable_warnings target)
   if(MSVC)
@@ -124,11 +129,16 @@ if(BUILD_TESTING)
     cpu_frame_copy
     public_c_and_legacy_migration
     core_table_lifecycle
-    real_offscreen_render
-    callback_failures
-    same_session_reentry
     concurrent_renders
   )
+  if(VTK_FLUTTER_TEST_REAL_RENDERING)
+    list(
+      APPEND VTK_FLUTTER_CONTRACT_CASES
+      real_offscreen_render
+      callback_failures
+      same_session_reentry
+    )
+  endif()
   foreach(contract_case IN LISTS VTK_FLUTTER_CONTRACT_CASES)
     set(test_name vtk_flutter_native_core_contract_${contract_case})
     add_test(NAME ${test_name} COMMAND vtk_flutter_core_contract_test ${contract_case})

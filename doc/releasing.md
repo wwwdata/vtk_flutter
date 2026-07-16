@@ -32,8 +32,11 @@ target:
 | `windows-x64` | Windows x64 | `vtk_flutter_core.dll` |
 
 Host native contract tests run for both macOS architectures and Windows x64.
-The iOS and Android rows are cross-compile checks; device and simulator render
-qualification remains a separate platform-support concern.
+GitHub's headless Windows runner executes the CPU, ABI, lifecycle, and
+serialization contracts with real-render contracts disabled because VTK's
+Win32 backend requires a usable WGL context. The iOS and Android rows are
+cross-compile checks; device and simulator render qualification remains a
+separate platform-support concern.
 
 Every quality native job uploads its built library as a short-lived workflow
 artifact. Downstream jobs inject that exact library through the build hook's

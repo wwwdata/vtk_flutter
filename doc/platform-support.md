@@ -5,7 +5,7 @@
 | macOS | arm64, x64 | MPR, 3D, locator | BGRA CVPixelBuffer texture | Qualified on arm64: SwiftPM consumer build plus render, resize, replacement, recreation, and disposal integration test; x64 build-covered in CI |
 | iOS | arm64 device; arm64/x64 simulator | MPR, 3D, locator | BGRA CVPixelBuffer texture | Adapter and SwiftPM/CocoaPods build-qualified; device render qualification pending |
 | Android | arm64-v8a, armeabi-v7a, x86_64 | MPR, 3D, locator | RGBA staging to ANativeWindow SurfaceTexture | Adapter and consumer APK build-qualified; device render qualification pending |
-| Windows | x64 | MPR, 3D, locator | Flutter pixel-buffer texture | Native contract, adapter, and consumer build-qualified; Windows render qualification pending |
+| Windows | x64 | MPR, 3D, locator | Flutter pixel-buffer texture | Native CPU/ABI/lifecycle contracts, adapter, and consumer build-qualified; Windows render qualification pending |
 | Web | Chrome | locator | vtk.js image presentation | Release build-qualified; browser render qualification pending |
 | Linux | deferred | none | unsupported | Not implemented |
 
