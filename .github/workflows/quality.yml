@@ -153,7 +153,7 @@ jobs:
 
       - name: Restore bootstrapped VTK
         id: vtk-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .dart_tool/vtk/${{ env.VTK_VERSION }}/${{ matrix.target }}/install
           key: vtk-${{ env.VTK_VERSION }}-${{ matrix.target }}-${{ hashFiles('tool/bootstrap_vtk.dart') }}
@@ -161,6 +161,13 @@ jobs:
       - name: Bootstrap VTK
         if: steps.vtk-cache.outputs.cache-hit != 'true'
         run: dart run tool/bootstrap_vtk.dart --platform ${{ matrix.target }}
+
+      - name: Save bootstrapped VTK
+        if: steps.vtk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .dart_tool/vtk/${{ env.VTK_VERSION }}/${{ matrix.target }}/install
+          key: vtk-${{ env.VTK_VERSION }}-${{ matrix.target }}-${{ hashFiles('tool/bootstrap_vtk.dart') }}
 
       - name: Build monolithic dynamic library
         shell: pwsh

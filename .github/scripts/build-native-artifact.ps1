@@ -143,7 +143,8 @@ try {
       '-B', $testDirectory,
       '-DCMAKE_BUILD_TYPE=Release',
       "-DVTK_DIR=$vtkDirectory",
-      '-DVTK_FLUTTER_BUILD_SHARED_CORE=ON',
+      # Internal migration-contract probes are not part of the DLL export ABI.
+      '-DVTK_FLUTTER_BUILD_SHARED_CORE=OFF',
       '-DBUILD_TESTING=ON'
     )
     if ($Target -eq 'macos-arm64') {
