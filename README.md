@@ -10,21 +10,47 @@ The public Dart contract and portable VTK 9.5.2 core are implemented. Platform
 adapters are qualified independently; see [platform support](docs/platform-support.md)
 for the current evidence and limitations.
 
-## Setup
+## Use the package
+
+Once a package version is published, add it to a Flutter application and run
+the application normally:
+
+```sh
+flutter pub add vtk_flutter
+flutter run
+```
+
+No VTK SDK, CMake setup, CocoaPods customization, or application-owned C++ is
+required. A Dart build hook selects the current target, downloads the pinned
+native library from an immutable GitHub Release, verifies its SHA-256 digest,
+and bundles it as a Dart code asset. Flutter's normal platform build compiles
+only the small texture adapter.
+
+Apple applications can consume that adapter through Swift Package Manager or
+CocoaPods. Flutter 3.44 and later prefer Swift Package Manager.
+
+## Develop the repository
 
 The repository uses Flutter 3.44.6 through FVM.
 
 ```sh
 fvm flutter pub get
-fvm dart run tool/bootstrap_vtk.dart --platform macos-arm64
-fvm dart run tool/check.dart --full
-cd example && fvm flutter run -d macos
+fvm dart run tool/check.dart
 ```
 
-The bootstrap command downloads the pinned VTK source archive, verifies its
-SHA-256, and installs the selected static native build beneath `.dart_tool/vtk/`.
-Use `--help` to list all targets and `--source-dir` to reuse an existing VTK
-9.5.2 checkout.
+Maintainers building native release artifacts can bootstrap the checksum-pinned
+VTK source and run host integration checks:
+
+```sh
+fvm dart run tool/bootstrap_vtk.dart --platform macos-arm64
+fvm dart run tool/check.dart --full
+```
+
+The example becomes a normal zero-setup consumer after the corresponding
+native GitHub Release exists. Before that release, maintainers can set
+`hooks.user_defines.vtk_flutter.native_artifact` in the example application's
+`pubspec.yaml` to a locally built library; the build-hook tests cover this
+override explicitly.
 
 ## Public API
 
@@ -55,7 +81,7 @@ context recreation, and session disposal/recreation.
 
 - `lib/` contains the stable Dart API and generated FFI bindings.
 - `native/` contains the C ABI and shared VTK pipeline.
-- Platform directories contain only Flutter texture and graphics-context glue.
+- Platform directories contain only Flutter texture and presentation glue.
 - `example/` is a synthetic renderer lab with no patient or backend data.
 
 The package intentionally exposes three product-level rendering modes rather

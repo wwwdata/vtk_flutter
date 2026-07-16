@@ -6,9 +6,9 @@ the offscreen render window and framebuffer readback. A plugin owns Flutter
 texture registration and writable CPU presentation storage. No C++ class, VTK
 object, graphics-context handle, or Flutter type crosses this boundary.
 
-ABI v1 remains exported while the existing in-process platform adapters are
-migrated. Those adapters may still use the private C++ `RenderTarget` seam and
-link VTK; that seam is legacy-only and is not part of ABI v2.
+The direct ABI-v1 exports remain available to Dart FFI. Every Flutter platform
+adapter uses ABI v2; no adapter compiles or links the private C++ render-target
+seam or any VTK library.
 
 ## Discovery and ownership
 
@@ -127,13 +127,9 @@ must return CPU storage that remains valid through publication and perform any
 required texture upload in `end_frame`. The core never receives platform image,
 texture, surface, device, context, or registrar handles.
 
-## Migration
+## Platform status
 
-Platform adapters can migrate independently while the ABI-v1 exports remain:
-
-1. Move presentation storage and Flutter notification into the three callbacks.
-2. Stop constructing the private C++ `RenderTarget` and use the v2 target table.
-3. Remove VTK compilation and linking from that platform plugin.
-4. Resolve the bundled core as a Dart code asset.
-5. Remove the legacy ABI and private C++ seam only after every platform has
-   migrated.
+Android, iOS, macOS, and Windows all create opaque core sessions and texture
+targets from this table. Their build definitions compile only Flutter-facing
+presentation code. The shared code asset is the sole native binary that links
+VTK.

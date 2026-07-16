@@ -19,6 +19,20 @@ fvm dart run tool/bootstrap_vtk.dart --platform <target>
 fvm dart run tool/check.dart --full
 ```
 
+The bootstrap is a maintainer workflow, not a consumer installation step. To
+exercise an unreleased local library, configure the example workspace with:
+
+```yaml
+hooks:
+  user_defines:
+    vtk_flutter:
+      native_artifact: ../.dart_tool/native-shared-test/libvtk_flutter_core.dylib
+```
+
+Do not commit that local override. Pull requests build real consumer examples
+with workflow-produced target libraries on macOS, iOS Simulator, Android x64,
+and Windows x64.
+
 Run `npm ci && npm run build` in `web/` after changing the vtk.js bridge. Commit
 the regenerated bundle and license notice with its source change.
 

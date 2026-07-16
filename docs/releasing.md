@@ -35,6 +35,13 @@ Host native contract tests run for both macOS architectures and Windows x64.
 The iOS and Android rows are cross-compile checks; device and simulator render
 qualification remains a separate platform-support concern.
 
+Every quality native job uploads its built library as a short-lived workflow
+artifact. Downstream jobs inject that exact library through the build hook's
+local override and build real macOS, iOS Simulator, Android x64, and Windows
+consumer examples. The macOS job also runs the full renderer lifecycle
+integration test. This proves the adapters and code-asset bundling in addition
+to compiling the core in isolation.
+
 CI may restore a checksum-keyed VTK install cache. Native releases never
 restore compiled VTK or vtk_flutter output caches: every library is rebuilt
 from the checksum-pinned VTK source on its designated runner.

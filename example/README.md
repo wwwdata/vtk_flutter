@@ -1,17 +1,25 @@
-# vtk_flutter_example
+# vtk_flutter renderer lab
 
-Demonstrates how to use the vtk_flutter plugin.
+This application is the executable feature proof for `vtk_flutter`. It creates
+a deterministic synthetic signed-int16 volume and exercises:
 
-## Getting Started
+- oblique MPR, 3D volume, and high-visibility locator rendering;
+- window/level and camera controls;
+- viewport resize and volume replacement;
+- presentation-resource recreation;
+- session disposal and recreation.
 
-This project is a starting point for a Flutter application.
+It has no backend, patient data, or application-specific dependency.
 
-A few resources to get you started if this is your first Flutter project:
+## Run
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+After the pinned native release exists:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```sh
+fvm flutter pub get
+fvm flutter run -d macos
+```
+
+Substitute an Android, iOS, Windows, or Chrome device as appropriate. Native
+maintainers testing before a release can point the build hook at a local
+library as described in the repository README.

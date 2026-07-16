@@ -2,8 +2,9 @@
 
 The canonical native contract is `native/include/vtk_flutter.h`.
 
-- The direct-export ABI remains version 1 during migration. ABI-v2 is discovered
-  through its versioned, size-checked function table and descriptors.
+- The direct Dart FFI exports remain ABI version 1. Platform adapters discover
+  the texture integration through the versioned, size-checked ABI-v2 function
+  table and descriptors.
 - The header must compile as C11 without VTK or Flutter headers.
 - Native functions return `VtkFlutterStatusCode` and fill a bounded status
   message. C++ exceptions never cross the boundary.
