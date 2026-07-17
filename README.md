@@ -1,95 +1,97 @@
 # vtk_flutter
 
-An open-source Flutter plugin for focused VTK-backed volume rendering. The
-package owns its Dart API, native VTK integration, Flutter texture adapters,
-and a self-contained example.
+`vtk_flutter` is an experimental, domain-agnostic Flutter integration for
+[VTK](https://vtk.org/). It lets Dart code assemble typed visualization
+pipelines while a small native core executes those pipelines with VTK 9.6.2
+and platform plugins present completed frames to Flutter.
 
-## Current status
+The package is under active development and is not published to pub.dev.
+`publish_to: none` is intentional; use a reviewed source dependency only if
+you are prepared for API and artifact-contract changes.
 
-The public Dart contract and portable VTK 9.5.2 core are implemented. Platform
-adapters are qualified independently; see [platform support](doc/platform-support.md)
-for the current evidence and limitations.
+## Architecture at a glance
 
-## Use the package
+- Dart owns public types, validation, pipeline construction, object lifetimes,
+  capabilities, and serialized session operations.
+- Native code exposes a minimal, generic C ABI: opaque sessions and object
+  handles, image-data upload, typed-wrapper invocation transport, rendering,
+  status reporting, and explicit destruction.
+- Android, iOS, macOS, and Windows plugins are presentation adapters. They
+  register Flutter textures, provide frame storage, publish completed frames,
+  and manage platform lifecycle; they do not construct VTK pipelines.
+- Web uses a vtk.js backend and reports a smaller capability set. Native and
+  Web callers must query capabilities instead of assuming feature parity.
 
-Once a package version is published, add it to a Flutter application and run
-the application normally:
+The supported Dart API is a curated set of typed VTK wrappers. A broader
+dynamic object API is available only through `vtk_flutter_experimental.dart`
+as an explicitly unstable escape hatch; it is not a stable mirror of the VTK
+C++ API.
 
-```sh
-flutter pub add vtk_flutter
-flutter run
-```
+See [Architecture](doc/architecture.md) for ownership and boundary details.
 
-No VTK SDK, CMake setup, CocoaPods customization, or application-owned C++ is
-required. A Dart build hook selects the current target, downloads the pinned
-native library from an immutable GitHub Release, verifies its SHA-256 digest,
-and bundles it as a Dart code asset. Flutter's normal platform build compiles
-only the small texture adapter.
+## Platforms
 
-Apple applications can consume that adapter through Swift Package Manager or
-CocoaPods. Flutter 3.44 and later prefer Swift Package Manager.
+The native artifact matrix contains nine targets:
 
-## Develop the repository
+| Flutter platform | Artifact targets |
+| --- | --- |
+| macOS | `macos-arm64`, `macos-x64` |
+| iOS | `ios-arm64`, `ios-simulator-arm64`, `ios-simulator-x64` |
+| Android | `android-arm64`, `android-armeabi-v7a`, `android-x86_64` |
+| Windows | `windows-x64` |
+| Web | No native artifact; vtk.js backend |
 
-The repository uses Flutter 3.44.6 through FVM.
+Web is the tenth runtime row, but it is not a native build target. Linux is not
+currently implemented. Detailed qualification and capability limits are in
+[Platform support](doc/platform-support.md).
+
+## Native artifact delivery
+
+Applications do not build VTK. A Dart build hook selects the target-specific
+native library, downloads it from the pinned immutable GitHub native release,
+verifies its SHA-256 digest, and bundles it as a code asset. Flutter then
+builds only the platform presentation adapter.
+
+Maintainers can override the download with a local library or a directory of
+target-specific libraries. Release assets, integrity metadata, and the
+separation between package quality and native releases are documented in
+[Native artifacts](doc/native-artifacts.md).
+
+## Develop locally
+
+The repository pins Flutter 3.44.6 through FVM.
 
 ```sh
 fvm flutter pub get
-fvm dart run tool/check.dart
+fvm flutter pub get --directory example
+fvm dart tool/check.dart
 ```
 
-Maintainers building native release artifacts can bootstrap the checksum-pinned
-VTK source and run host integration checks:
+For a complete host check, first bootstrap VTK 9.6.2 for the current native
+target, then run:
 
 ```sh
-fvm dart run tool/bootstrap_vtk.dart --platform macos-arm64
-fvm dart run tool/check.dart --full
+fvm dart tool/bootstrap_vtk.dart --platform macos-arm64
+fvm dart tool/check.dart --full
 ```
 
-The example becomes a normal zero-setup consumer after the corresponding
-native GitHub Release exists. Before that release, maintainers can set
-`hooks.user_defines.vtk_flutter.native_artifact` in the example application's
-`pubspec.yaml` to a locally built library; the build-hook tests cover this
-override explicitly. Multi-architecture builds can instead point it at a
-directory containing `<target>/libvtk_flutter_core.*` for each requested
-target, such as `ios-simulator-arm64` and `ios-simulator-x64`.
+Use `windows-x64` on Windows and `macos-x64` on an Intel Mac. Cross-compiled
+iOS and Android targets are built in GitHub Actions. See
+[Local verification](doc/development.md) for the full check matrix.
 
-## Public API
+## Project layout
 
-```dart
-final renderer = VtkRenderer();
-final session = await renderer.open(VtkViewport(width: 640, height: 360));
-await session.setVolume(volume);
-await session.render(
-  VtkVolume3dRequest(
-    windowCenter: 350,
-    windowWidth: 1800,
-    azimuth: 35,
-    elevation: 20,
-    zoom: 1.35,
-  ),
-);
+- `lib/` contains public Dart types, typed VTK wrappers, lifecycle management,
+  backend protocols, and generated FFI bindings.
+- `native/` contains the generic C ABI, VTK-backed object session, render
+  target, and native contract tests.
+- `android/`, `ios/`, `macos/`, and `windows/` contain presentation-only
+  Flutter adapters.
+- `web/` builds the vtk.js backend assets.
+- `hook/` and `tool/` select, verify, build, and test native artifacts.
 
-// Place this in the widget tree and close the session when its owner disposes.
-VtkView(session: session);
-```
+## Licensing
 
-`VtkVolume` accepts x-fastest signed-int16 bytes, three dimensions, and a
-row-major 4x4 index-to-patient affine. The example creates deterministic data
-and exercises every available mode, resize, volume replacement, graphics
-context recreation, and session disposal/recreation.
-
-## Package shape
-
-- `lib/` contains the stable Dart API and generated FFI bindings.
-- `native/` contains the C ABI and shared VTK pipeline.
-- Platform directories contain only Flutter texture and presentation glue.
-- `example/` is a synthetic renderer lab with no patient or backend data.
-
-The package intentionally exposes three product-level rendering modes rather
-than generic bindings for arbitrary VTK C++ objects: oblique MPR, 3D volume,
-and high-visibility volume locator.
-
-See [architecture](doc/architecture.md) and the [ABI contract](doc/abi.md)
-before changing native code. The bounded VTK 9.6 session evaluation is recorded
-in [doc/vtk-session-evaluation.md](doc/vtk-session-evaluation.md).
+`vtk_flutter` is BSD 3-Clause licensed. VTK 9.6.2, vtk.js, and bundled
+third-party components retain their own notices and licenses. See
+[Licensing](doc/licensing.md), [LICENSE](LICENSE), and [NOTICE](NOTICE).

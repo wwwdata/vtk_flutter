@@ -2,30 +2,41 @@
 
 ## Purpose
 
-This repository is the open-source `vtk_flutter` package published by
-`bieker.ninja` from <https://github.com/wwwdata/vtk_flutter>.
+This repository develops the open-source `vtk_flutter` package at
+<https://github.com/wwwdata/vtk_flutter>. The package is experimental and
+unpublished. Keep `publish_to: none`; do not publish it without explicit
+maintainer approval and a separate release-readiness change.
 
 ## Required workflow
 
 - Use FVM and the Flutter version pinned in `.fvmrc`.
-- Run `fvm dart run tool/check.dart` after Dart changes.
+- Run `fvm dart tool/check.dart` after Dart changes.
 - Run the affected native CMake and platform build after native changes.
 - Add focused unit or integration coverage for every behavior change.
 - Keep commits small and coherent; never commit `.dart_tool`, VTK source,
-  native libraries, build products, patient data, or local signing state.
+  native libraries, build products, private datasets, or local signing state.
+- Native build workflows may upload short-lived workflow artifacts. Only the
+  gated native-release workflow may create downloadable native release assets.
+- Never add a package-publishing workflow while `publish_to: none` is present.
 
 ## Architecture rules
 
-- Product behavior, validation, and public state belong in Dart.
-- The public native boundary is `native/include/vtk_flutter.h` and must remain a
-  C ABI containing only fixed-width C-compatible types.
+- Dart owns product-independent pipeline construction, validation, public
+  state, capabilities, operation serialization, and object/session lifecycle.
+- The public native boundary is `native/include/vtk_flutter.h` and remains a
+  minimal C ABI containing only opaque handles and fixed-width C-compatible
+  types.
 - Never expose VTK, STL, Flutter, CoreVideo, JNI, Objective-C, or Win32 types in
   the public C header.
 - Generated FFI bindings are committed and regenerated from `ffigen.yaml`; do
   not edit them manually.
-- VTK scene construction belongs in the shared native core. Platform adapters
-  only own context, surface, texture registration, presentation, and lifecycle.
-- Preserve native render-thread affinity and explicit, idempotent session close.
+- The shared native core owns VTK objects and rendering. Platform adapters own
+  only context/surface integration, Flutter texture registration, frame
+  presentation, and platform lifecycle.
+- Public Dart callers use typed wrappers. Any future dynamic object API must be
+  explicitly experimental, capability-gated, and isolated from the stable API.
+- Preserve native render-thread affinity and explicit, idempotent session and
+  object disposal.
 - Do not add dependencies on private repositories, unpublished local paths, or
   organization-specific application code.
 
@@ -35,6 +46,8 @@ This repository is the open-source `vtk_flutter` package published by
 - Prefer immutable public value objects and typed failures.
 - Avoid force unwraps and silent native fallbacks.
 - Tests use descriptive names without external ticket suffixes.
-- The example uses synthetic data and only the public `vtk_flutter` API.
-- Keep `publish_to: none` until the first public release is explicitly
-  approved.
+- Examples use generated or public sample data and only public package APIs.
+- Keep native artifact target names synchronized across the build hook,
+  bootstrap tool, GitHub Actions matrices, and documentation.
+- Keep the VTK version, source URL, SHA-256 digest, CMake package directory,
+  enabled modules, and serialization-wrapping flags synchronized.

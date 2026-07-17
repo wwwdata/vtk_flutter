@@ -1,0 +1,26 @@
+vtk_flutter third-party notices
+================================
+
+vtk_flutter is distributed under the BSD 3-Clause license in LICENSE.
+
+Native artifacts are built from VTK 9.6.2:
+  https://vtk.org/files/release/9.6/VTK-9.6.2.tar.gz
+  SHA-256: aed12cec12a9609179bf66329070266627ca64244a10856a452b2a17ffb04a1d
+
+VTK is distributed under the BSD 3-Clause license:
+  https://gitlab.kitware.com/vtk/vtk/-/blob/v9.6.2/Copyright.txt
+
+The native libraries statically link selected VTK modules and their enabled
+bundled dependencies. Native releases must include
+NATIVE-THIRD-PARTY-LICENSES.txt with the complete applicable license texts,
+plus this notice, checksums, build manifests, and provenance attestations.
+
+The Web backend uses vtk.js and its transitive dependencies. vtk.js is
+distributed under the BSD 3-Clause license:
+  https://github.com/Kitware/vtk-js
+
+The generated Web asset license inventory is produced from web/package-lock.json
+and distributed with the package assets.
+
+This notice identifies third-party components; the corresponding license files
+and generated inventories contain the complete terms.

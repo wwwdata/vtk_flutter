@@ -11,18 +11,15 @@ permissions:
   contents: read
 
 concurrency:
-  # Keep PR updates cancellable without allowing a stuck main run to block a
-  # newer commit indefinitely on hosted-runner shutdown.
   group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 env:
   FLUTTER_VERSION: 3.44.6
-  VTK_VERSION: 9.5.2
 
 jobs:
-  dart-web:
-    name: Dart and web
+  package-web:
+    name: Dart, package, and Web
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -46,6 +43,12 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
           package-manager-cache: false
+
+      - name: Verify unpublished package policy
+        shell: bash
+        run: |
+          grep -Eq '^publish_to:[[:space:]]+none[[:space:]]*$' pubspec.yaml
+          test ! -e .github/workflows/publish-pub.yml
 
       - name: Validate PowerShell scripts
         shell: pwsh
@@ -72,281 +75,16 @@ jobs:
         run: flutter test
         working-directory: example
 
-      - name: Rebuild committed web assets
+      - name: Rebuild committed Web assets
         run: |
           npm ci
+          npm test
           npm run build
         working-directory: web
 
-      - name: Verify generated web assets are current
+      - name: Verify generated Web assets are current
         run: git diff --exit-code -- assets/
 
-      - name: Build web example
+      - name: Build Web example
         run: flutter build web --release
         working-directory: example
-
-  native:
-    name: Native shared core (${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: macos-arm64
-            runner: macos-15
-            library: libvtk_flutter_core.dylib
-            run_host_tests: true
-          - target: macos-x64
-            runner: macos-15-intel
-            library: libvtk_flutter_core.dylib
-            run_host_tests: true
-          - target: ios-arm64
-            runner: macos-15
-            library: libvtk_flutter_core.dylib
-            run_host_tests: false
-          - target: ios-simulator-arm64
-            runner: macos-15
-            library: libvtk_flutter_core.dylib
-            run_host_tests: false
-          - target: ios-simulator-x64
-            runner: macos-15-intel
-            library: libvtk_flutter_core.dylib
-            run_host_tests: false
-          - target: android-arm64
-            runner: ubuntu-24.04
-            library: libvtk_flutter_core.so
-            run_host_tests: false
-          - target: android-armeabi-v7a
-            runner: ubuntu-24.04
-            library: libvtk_flutter_core.so
-            run_host_tests: false
-          - target: android-x86_64
-            runner: ubuntu-24.04
-            library: libvtk_flutter_core.so
-            run_host_tests: false
-          - target: windows-x64
-            runner: windows-2025
-            library: vtk_flutter_core.dll
-            run_host_tests: true
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
-    steps:
-      - name: Check out source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-          pub-cache: true
-
-      - name: Install Android NDK
-        if: startsWith(matrix.target, 'android-')
-        shell: bash
-        run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358"
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/28.2.13676358" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/28.2.13676358" >> "$GITHUB_ENV"
-
-      - name: Restore bootstrapped VTK
-        id: vtk-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .dart_tool/vtk/${{ env.VTK_VERSION }}/${{ matrix.target }}/install
-          key: vtk-${{ env.VTK_VERSION }}-${{ matrix.target }}-${{ hashFiles('tool/bootstrap_vtk.dart') }}
-
-      - name: Bootstrap VTK
-        if: steps.vtk-cache.outputs.cache-hit != 'true'
-        run: dart run tool/bootstrap_vtk.dart --platform ${{ matrix.target }}
-
-      - name: Save bootstrapped VTK
-        if: steps.vtk-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .dart_tool/vtk/${{ env.VTK_VERSION }}/${{ matrix.target }}/install
-          key: vtk-${{ env.VTK_VERSION }}-${{ matrix.target }}-${{ hashFiles('tool/bootstrap_vtk.dart') }}
-
-      - name: Build monolithic dynamic library
-        shell: pwsh
-        env:
-          RUN_HOST_TESTS: ${{ matrix.run_host_tests }}
-        run: |
-          $parameters = @{
-            Target = '${{ matrix.target }}'
-            OutputDirectory = '.dart_tool/quality/${{ matrix.target }}'
-          }
-          if ($env:RUN_HOST_TESTS -eq 'true') {
-            $parameters.RunHostTests = $true
-          }
-          & .github/scripts/build-native-artifact.ps1 @parameters
-
-          $library = @(Get-ChildItem ".dart_tool/quality/${{ matrix.target }}/install" -Recurse -File -Filter '${{ matrix.library }}')
-          if ($library.Count -ne 1) {
-            throw "Expected exactly one ${{ matrix.library }}; found $($library.Count)."
-          }
-          New-Item '.dart_tool/quality-upload' -ItemType Directory -Force | Out-Null
-          Copy-Item $library[0].FullName ".dart_tool/quality-upload/${{ matrix.library }}"
-
-      - name: Upload native library for consumer builds
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: quality-native-${{ matrix.target }}
-          path: .dart_tool/quality-upload/${{ matrix.library }}
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 2
-
-  apple-consumer:
-    name: Apple consumer examples
-    needs: native
-    runs-on: macos-15
-    timeout-minutes: 45
-    steps:
-      - name: Check out source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-          pub-cache: true
-
-      - name: Download macOS native library
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: quality-native-macos-arm64
-          path: .dart_tool/consumer/macos
-
-      - name: Configure local macOS artifact
-        shell: pwsh
-        run: |
-          $artifact = (Resolve-Path '.dart_tool/consumer/macos/libvtk_flutter_core.dylib').Path.Replace('\', '/')
-          $pubspec = Get-Content 'example/pubspec.yaml' -Raw
-          $hook = "hooks:`n  user_defines:`n    vtk_flutter:`n      native_artifact: '$artifact'`n`n"
-          $pubspec.Replace('environment:', "${hook}environment:") |
-            Set-Content 'example/pubspec.yaml' -Encoding utf8NoBOM
-
-      - name: Build and exercise macOS example through SwiftPM
-        working-directory: example
-        run: |
-          flutter pub get
-          flutter build macos --debug
-          flutter test integration_test/renderer_lab_test.dart -d macos
-
-      - name: Download iOS arm64 simulator native library
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: quality-native-ios-simulator-arm64
-          path: .dart_tool/consumer/ios/ios-simulator-arm64
-
-      - name: Download iOS x64 simulator native library
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: quality-native-ios-simulator-x64
-          path: .dart_tool/consumer/ios/ios-simulator-x64
-
-      - name: Configure local iOS simulator artifacts
-        shell: pwsh
-        run: |
-          $artifact = (Resolve-Path '.dart_tool/consumer/ios').Path.Replace('\', '/')
-          $pubspec = Get-Content 'example/pubspec.yaml' -Raw
-          $pubspec -replace "native_artifact: '.*'", "native_artifact: '$artifact'" |
-            Set-Content 'example/pubspec.yaml' -Encoding utf8NoBOM
-
-      - name: Build iOS simulator example through SwiftPM
-        working-directory: example
-        run: |
-          flutter clean
-          flutter pub get
-          flutter build ios --simulator --no-codesign
-
-  android-consumer:
-    name: Android x64 consumer example
-    needs: native
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - name: Check out source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-          pub-cache: true
-
-      - name: Install Android NDK
-        shell: bash
-        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358"'
-
-      - name: Download Android native library
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: quality-native-android-x86_64
-          path: .dart_tool/consumer/android
-
-      - name: Configure local Android artifact
-        shell: pwsh
-        run: |
-          $artifact = (Resolve-Path '.dart_tool/consumer/android/libvtk_flutter_core.so').Path.Replace('\', '/')
-          $pubspec = Get-Content 'example/pubspec.yaml' -Raw
-          $hook = "hooks:`n  user_defines:`n    vtk_flutter:`n      native_artifact: '$artifact'`n`n"
-          $pubspec.Replace('environment:', "${hook}environment:") |
-            Set-Content 'example/pubspec.yaml' -Encoding utf8NoBOM
-
-      - name: Build Android x64 example
-        working-directory: example
-        run: |
-          flutter pub get
-          flutter build apk --debug --target-platform android-x64
-
-  windows-consumer:
-    name: Windows x64 consumer example
-    needs: native
-    runs-on: windows-2025
-    timeout-minutes: 35
-    steps:
-      - name: Check out source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
-          pub-cache: true
-
-      - name: Download Windows native library
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: quality-native-windows-x64
-          path: .dart_tool/consumer/windows
-
-      - name: Configure local Windows artifact
-        shell: pwsh
-        run: |
-          $artifact = '../.dart_tool/consumer/windows/vtk_flutter_core.dll'
-          $pubspec = Get-Content 'example/pubspec.yaml' -Raw
-          $hook = "hooks:`n  user_defines:`n    vtk_flutter:`n      native_artifact: '$artifact'`n`n"
-          $pubspec.Replace('environment:', "${hook}environment:") |
-            Set-Content 'example/pubspec.yaml' -Encoding utf8NoBOM
-
-      - name: Build Windows example
-        working-directory: example
-        run: |
-          flutter pub get
-          flutter build windows --debug

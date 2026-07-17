@@ -47,7 +47,7 @@ const _usage =
 Bootstrap VTK $vtkVersion for vtk_flutter.
 
 Usage:
-  dart run tool/bootstrap_vtk.dart --platform <target> [options]
+  dart tool/bootstrap_vtk.dart --platform <target> [options]
 
 Targets:
   macos-arm64

@@ -3,7 +3,7 @@ name: Release native libraries
 on:
   push:
     tags:
-      - native-v0.1.0-dev.1
+      - "native-v*"
 
 permissions:
   actions: read
@@ -15,10 +15,10 @@ concurrency:
 
 env:
   FLUTTER_VERSION: 3.44.6
-  NATIVE_RELEASE_TAG: native-v0.1.0-dev.1
-  VTK_VERSION: 9.5.2
-  VTK_SOURCE_URL: https://vtk.org/files/release/9.5/VTK-9.5.2.tar.gz
-  VTK_SOURCE_SHA256: cee64b98d270ff7302daf1ef13458dff5d5ac1ecb45d47723835f7f7d562c989
+  NATIVE_RELEASE_TAG: ${{ github.ref_name }}
+  VTK_VERSION: 9.6.2
+  VTK_SOURCE_URL: https://vtk.org/files/release/9.6/VTK-9.6.2.tar.gz
+  VTK_SOURCE_SHA256: aed12cec12a9609179bf66329070266627ca64244a10856a452b2a17ffb04a1d
 
 jobs:
   verify:
@@ -31,19 +31,41 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify tag, artifact contract, and successful quality run
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify source and unpublished package policy
         shell: bash
         run: |
           test "$GITHUB_REF_TYPE" = "tag"
           test "$GITHUB_REF_NAME" = "$NATIVE_RELEASE_TAG"
+          grep -Eq '^publish_to:[[:space:]]+none[[:space:]]*$' pubspec.yaml
           grep -F "const nativeReleaseTag = '$NATIVE_RELEASE_TAG';" tool/native_artifacts.dart
+          grep -F "const vtkVersion = '$VTK_VERSION';" tool/bootstrap_vtk.dart
+          grep -F "'$VTK_SOURCE_SHA256';" tool/bootstrap_vtk.dart
+          grep -F "'-DVTK_ENABLE_WRAPPING=ON'," tool/bootstrap_vtk.dart
+          grep -F "'-DVTK_WRAP_SERIALIZATION=ON'," tool/bootstrap_vtk.dart
+          grep -F "\$vtkVersion = '$VTK_VERSION'" .github/scripts/build-native-artifact.ps1
+          grep -F "\$vtkCmakePackageVersion = '9.6'" .github/scripts/build-native-artifact.ps1
+          grep -F "VTK $VTK_VERSION" NOTICE
+          grep -F "VTK $VTK_VERSION" native/THIRD_PARTY_LICENSES.txt
+          grep -F "$VTK_SOURCE_SHA256" native/THIRD_PARTY_LICENSES.txt
 
-          successful_runs=$(gh api \
+      - name: Verify successful quality and native-build runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          default_head=$(gh api \
+            "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+            --jq '.object.sha')
+          test "$default_head" = "$GITHUB_SHA"
+
+          quality_runs=$(gh api \
             "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs?head_sha=$GITHUB_SHA&status=completed&per_page=100" \
-            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
-          test "$successful_runs" -gt 0
+            --jq '[.workflow_runs[] | select(.conclusion == "success" and .event == "push" and .head_branch == "main")] | length')
+          native_runs=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/native-build.yml/runs?head_sha=$GITHUB_SHA&status=completed&per_page=100" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success" and .event == "push" and .head_branch == "main")] | length')
+          test "$quality_runs" -gt 0
+          test "$native_runs" -gt 0
 
   build:
     name: Build ${{ matrix.target }}
@@ -123,7 +145,15 @@ jobs:
       # Release libraries intentionally do not restore compiled VTK caches.
       # Every dynamic library is rebuilt from the pinned upstream source.
       - name: Bootstrap VTK
-        run: dart run tool/bootstrap_vtk.dart --platform ${{ matrix.target }}
+        run: dart tool/bootstrap_vtk.dart --platform ${{ matrix.target }}
+
+      - name: Verify native license inventory
+        shell: bash
+        run: |
+          dart tool/generate_native_licenses.dart \
+            --source ".dart_tool/vtk/${{ env.VTK_VERSION }}/${{ matrix.target }}/source" \
+            --targets ".dart_tool/vtk/${{ env.VTK_VERSION }}/${{ matrix.target }}/install/lib/cmake/vtk-9.6/VTK-targets.cmake" \
+            --check
 
       - name: Build and package monolithic dynamic library
         shell: pwsh
@@ -223,7 +253,9 @@ jobs:
 
       - name: Include native third-party licenses
         shell: pwsh
-        run: Copy-Item native/THIRD_PARTY_LICENSES.txt release/NATIVE-THIRD-PARTY-LICENSES.txt
+        run: |
+          Copy-Item NOTICE release/VTK-NOTICE.txt
+          Copy-Item native/THIRD_PARTY_LICENSES.txt release/NATIVE-THIRD-PARTY-LICENSES.txt
 
       - name: Create aggregate build manifest and checksums
         shell: pwsh
@@ -286,9 +318,10 @@ jobs:
           Every target ZIP contains exactly one vtk_flutter core library. Verify
           downloads against SHA256SUMS and the GitHub artifact attestations.
           BUILD-MANIFESTS.json records the source, toolchain, and build identity.
+          VTK-NOTICE.txt records the pinned VTK source and redistribution notice.
           NATIVE-THIRD-PARTY-LICENSES.txt accompanies every native binary.
 
-          See doc/releasing.md in the tagged source for target details.
+          See doc/native-artifacts.md in the tagged source for target details.
           EOF
           gh release create "$NATIVE_RELEASE_TAG" \
             --draft \
@@ -314,3 +347,34 @@ jobs:
           done
           echo "The immutable release attestation was not verifiable after 60 seconds." >&2
           exit 1
+
+  released-consumer:
+    name: Released macOS consumer
+    needs: publish
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+          pub-cache: true
+
+      - name: Download through the package build hook and exercise FFI
+        run: |
+          flutter pub get
+          flutter test tool/smoke_native_ffi.dart -d macos
+
+      - name: Build and render the released package example
+        working-directory: example
+        run: |
+          flutter pub get
+          flutter build macos --debug
+          flutter test integration_test/renderer_lab_test.dart -d macos

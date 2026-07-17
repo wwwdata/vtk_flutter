@@ -46,8 +46,9 @@ if ($ArchivePath) {
   $ArchivePath = [IO.Path]::GetFullPath($ArchivePath)
 }
 
-$vtkVersion = '9.5.2'
-$vtkDirectory = Join-Path $repository ".dart_tool/vtk/$vtkVersion/$Target/install/lib/cmake/vtk-9.5"
+$vtkVersion = '9.6.2'
+$vtkCmakePackageVersion = '9.6'
+$vtkDirectory = Join-Path $repository ".dart_tool/vtk/$vtkVersion/$Target/install/lib/cmake/vtk-$vtkCmakePackageVersion"
 if (-not (Test-Path $vtkDirectory)) {
   throw "Missing bootstrapped VTK for $Target at $vtkDirectory."
 }
@@ -131,7 +132,11 @@ Push-Location $repository
 try {
   Invoke-CMake -CommandArguments $configureArguments
   Invoke-CMake -CommandArguments @('--build', $buildDirectory, '--config', 'Release', '--parallel')
-  Invoke-CMake -CommandArguments @('--install', $buildDirectory, '--config', 'Release')
+  $installArguments = @('--install', $buildDirectory, '--config', 'Release')
+  if ($Target -ne 'windows-x64') {
+    $installArguments += '--strip'
+  }
+  Invoke-CMake -CommandArguments $installArguments
 
   if ($RunHostTests) {
     if ($Target -notin 'macos-arm64', 'macos-x64', 'windows-x64') {

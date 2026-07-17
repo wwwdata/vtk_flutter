@@ -4,7 +4,7 @@ const _usage = '''
 Run vtk_flutter quality checks.
 
 Usage:
-  dart run tool/check.dart [--full] [--help]
+  dart tool/check.dart [--full] [--help]
 
 Checks:
   fvm dart format --output=none --set-exit-if-changed .
