@@ -35,7 +35,7 @@ namespace vtk_flutter {
 namespace {
 using Clock = std::chrono::steady_clock;
 
-constexpr std::size_t kCpuFrameV2Size = sizeof(VtkFlutterCpuFrameV2);
+constexpr std::size_t kCpuFrameSize = sizeof(VtkFlutterCpuFrame);
 
 template <typename Duration> double Milliseconds(Duration duration) {
   return std::chrono::duration<double, std::milli>(duration).count();
@@ -68,12 +68,12 @@ void CheckCallbackResult(int32_t code, const VtkFlutterStatus &status,
 }
 
 std::uint64_t RequiredCapacity(const VtkFlutterViewport &viewport,
-                               const VtkFlutterCpuFrameV2 &frame) {
+                               const VtkFlutterCpuFrame &frame) {
   if (viewport.width <= 0 || viewport.height <= 0) {
     throw std::invalid_argument("positive CPU frame dimensions are required");
   }
-  if (frame.struct_size < kCpuFrameV2Size ||
-      frame.version != VTK_FLUTTER_CPU_FRAME_VERSION_2) {
+  if (frame.struct_size < kCpuFrameSize ||
+      frame.version != VTK_FLUTTER_CPU_FRAME_VERSION) {
     throw std::invalid_argument("unsupported CPU frame descriptor");
   }
   if (frame.pixels == nullptr) {
@@ -105,8 +105,8 @@ std::uint64_t RequiredCapacity(const VtkFlutterViewport &viewport,
   return required;
 }
 
-void CapturePatientToClip(vtkRenderer &renderer,
-                          VtkFlutterMetrics &metrics) {
+void CaptureWorldToClip(vtkRenderer &renderer,
+                        VtkFlutterFrameMetrics &metrics) {
   auto *matrix = renderer.GetActiveCamera()
                      ->GetCompositeProjectionTransformMatrix(
                          renderer.GetTiledAspectRatio(), -1.0, 1.0);
@@ -115,50 +115,11 @@ void CapturePatientToClip(vtkRenderer &renderer,
   }
   for (int row = 0; row < 4; ++row) {
     for (int column = 0; column < 4; ++column) {
-      metrics.patient_to_clip[row * 4 + column] =
+      metrics.world_to_clip[row * 4 + column] =
           matrix->GetElement(row, column);
     }
   }
-  metrics.patient_to_clip_valid = 1;
-}
-
-void PopulateContentEvidence(const VtkFlutterCpuFrameV2 &frame,
-                             const VtkFlutterViewport &viewport,
-                             VtkFlutterMetrics &metrics) {
-  constexpr std::uint64_t kFnv1a64OffsetBasis = 14695981039346656037ULL;
-  constexpr std::uint64_t kFnv1a64Prime = 1099511628211ULL;
-  std::array<bool, 256> encountered_values{};
-  std::uint64_t checksum = kFnv1a64OffsetBasis;
-  std::uint64_t changed_pixels = 0;
-  const std::array<std::uint8_t, 4> background{
-      frame.pixels[0], frame.pixels[1], frame.pixels[2], frame.pixels[3]};
-  const auto row_bytes = static_cast<std::size_t>(frame.row_bytes);
-  for (int row = 0; row < viewport.height; ++row) {
-    const auto *pixels =
-        frame.pixels + static_cast<std::size_t>(row) * row_bytes;
-    for (int column = 0; column < viewport.width; ++column) {
-      bool changed = false;
-      for (std::size_t channel = 0; channel < 4; ++channel) {
-        const auto value = pixels[static_cast<std::size_t>(column) * 4U +
-                                  channel];
-        checksum ^= value;
-        checksum *= kFnv1a64Prime;
-        encountered_values[value] = true;
-        changed = changed || value != background[channel];
-      }
-      if (changed) {
-        ++changed_pixels;
-      }
-    }
-  }
-  const auto unique_values = static_cast<std::uint64_t>(
-      std::count(encountered_values.begin(), encountered_values.end(), true));
-  metrics.surface_checksum = checksum;
-  metrics.surface_changed_pixels = changed_pixels;
-  metrics.surface_unique_byte_values = unique_values;
-  metrics.cpu_checksum = checksum;
-  metrics.cpu_changed_pixels = changed_pixels;
-  metrics.cpu_unique_byte_values = unique_values;
+  metrics.world_to_clip_valid = 1;
 }
 
 #if defined(__APPLE__)
@@ -212,12 +173,14 @@ public:
     }
   }
 
-  void Render(PreparedView view, const VtkFlutterViewport &viewport,
-              const VtkFlutterCpuFrameV2 &frame,
-              VtkFlutterMetrics &metrics) {
+  void Render(vtkSmartPointer<vtkRenderer> renderer,
+              const VtkFlutterViewport &viewport,
+              const VtkFlutterCpuFrame &frame,
+              VtkFlutterFrameMetrics &metrics) {
     RunOnRenderThread(
-        [this, view = std::move(view), viewport, frame, &metrics]() mutable {
-          RenderOnWorker(std::move(view), viewport, frame, metrics);
+        [this, renderer = std::move(renderer), viewport, frame,
+         &metrics]() mutable {
+          RenderOnWorker(std::move(renderer), viewport, frame, metrics);
         });
   }
 
@@ -243,22 +206,20 @@ private:
     window_->SetSwapBuffers(0);
   }
 
-  void RenderOnWorker(PreparedView view,
+  void RenderOnWorker(vtkSmartPointer<vtkRenderer> renderer,
                       const VtkFlutterViewport &viewport,
-                      const VtkFlutterCpuFrameV2 &frame,
-                      VtkFlutterMetrics &metrics) {
+                      const VtkFlutterCpuFrame &frame,
+                      VtkFlutterFrameMetrics &metrics) {
     window_->SetSize(viewport.width, viewport.height);
     window_->GetRenderers()->RemoveAllItems();
-    window_->AddRenderer(view.renderer);
+    window_->AddRenderer(renderer);
 
     try {
       const auto render_started = Clock::now();
       window_->Render();
       const auto render_finished = Clock::now();
 
-      if (view.capture_patient_to_clip) {
-        CapturePatientToClip(*view.renderer, metrics);
-      }
+      CaptureWorldToClip(*renderer, metrics);
 
       vtkNew<vtkUnsignedCharArray> pixels;
       const auto readback_started = Clock::now();
@@ -279,12 +240,11 @@ private:
       metrics.gpu_sync_wait_ms = 0.0;
       metrics.cpu_readback_ms =
           Milliseconds(readback_finished - readback_started);
-      PopulateContentEvidence(frame, viewport, metrics);
     } catch (...) {
-      window_->RemoveRenderer(view.renderer);
+      window_->RemoveRenderer(renderer);
       throw;
     }
-    window_->RemoveRenderer(view.renderer);
+    window_->RemoveRenderer(renderer);
   }
 
   vtkSmartPointer<vtkRenderWindow> window_;
@@ -297,7 +257,7 @@ int32_t FrameCallbackFailure::Code() const { return code_; }
 
 void CopyRgbaBottomUpToFrame(const std::uint8_t *source,
                              const VtkFlutterViewport &viewport,
-                             const VtkFlutterCpuFrameV2 &frame) {
+                             const VtkFlutterCpuFrame &frame) {
   if (source == nullptr) {
     throw std::invalid_argument("VTK source pixels are required");
   }
@@ -326,15 +286,15 @@ void CopyRgbaBottomUpToFrame(const std::uint8_t *source,
 }
 
 CallbackRenderTarget::CallbackRenderTarget(
-    const VtkFlutterFrameCallbacksV2 &callbacks)
+    const VtkFlutterFrameCallbacks &callbacks)
     : callbacks_(callbacks), impl_(std::make_unique<Impl>()) {}
 
 CallbackRenderTarget::~CallbackRenderTarget() = default;
 
-void CallbackRenderTarget::Render(PreparedView view,
+void CallbackRenderTarget::Render(vtkSmartPointer<vtkRenderer> renderer,
                                   const VtkFlutterViewport &viewport,
-                                  VtkFlutterMetrics &metrics) {
-  VtkFlutterCpuFrameV2 frame{};
+                                  VtkFlutterFrameMetrics &metrics) {
+  VtkFlutterCpuFrame frame{};
   VtkFlutterStatus callback_status{};
   const auto begin_code = callbacks_.begin_frame(
       callbacks_.user_data, &viewport, &frame, &callback_status);
@@ -342,7 +302,7 @@ void CallbackRenderTarget::Render(PreparedView view,
 
   try {
     RequiredCapacity(viewport, frame);
-    impl_->Render(std::move(view), viewport, frame, metrics);
+    impl_->Render(std::move(renderer), viewport, frame, metrics);
     callback_status = {};
     const auto submit_started = Clock::now();
     const auto end_code = callbacks_.end_frame(callbacks_.user_data, &metrics,

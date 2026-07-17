@@ -10,8 +10,9 @@ import 'dart:ffi' as ffi;
 @ffi.Native<ffi.Uint32 Function()>()
 external int vtk_flutter_abi_version();
 
-@ffi.Native<ffi.Pointer<VtkFlutterCoreApiV2> Function()>()
-external ffi.Pointer<VtkFlutterCoreApiV2> vtk_flutter_get_core_api_v2();
+@ffi.Native<ffi.Pointer<VtkFlutterPresentationApi> Function()>()
+external ffi.Pointer<VtkFlutterPresentationApi>
+vtk_flutter_get_presentation_api();
 
 @ffi.Native<ffi.Void Function(ffi.Pointer<VtkFlutterStatus>)>()
 external void vtk_flutter_status_clear(ffi.Pointer<VtkFlutterStatus> status);
@@ -34,51 +35,83 @@ external void vtk_flutter_session_destroy(
 
 @ffi.Native<
   ffi.Int32 Function(
-    ffi.Pointer<VtkFlutterVolume>,
-    ffi.Pointer<VtkFlutterStatus>,
-  )
->()
-external int vtk_flutter_validate_volume(
-  ffi.Pointer<VtkFlutterVolume> volume,
-  ffi.Pointer<VtkFlutterStatus> status,
-);
-
-@ffi.Native<
-  ffi.Int32 Function(
     ffi.Pointer<VtkFlutterSession>,
-    ffi.Pointer<VtkFlutterVolume>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<VtkFlutterObjectHandle>,
     ffi.Pointer<VtkFlutterStatus>,
   )
 >()
-external int vtk_flutter_session_set_volume(
+external int vtk_flutter_object_create(
   ffi.Pointer<VtkFlutterSession> session,
-  ffi.Pointer<VtkFlutterVolume> volume,
-  ffi.Pointer<VtkFlutterStatus> status,
-);
-
-@ffi.Native<
-  ffi.Int32 Function(
-    ffi.Pointer<VtkFlutterRenderRequest>,
-    ffi.Pointer<VtkFlutterStatus>,
-  )
->()
-external int vtk_flutter_validate_render_request(
-  ffi.Pointer<VtkFlutterRenderRequest> request,
+  ffi.Pointer<ffi.Char> class_name,
+  ffi.Pointer<VtkFlutterObjectHandle> out_object,
   ffi.Pointer<VtkFlutterStatus> status,
 );
 
 @ffi.Native<
   ffi.Int32 Function(
     ffi.Pointer<VtkFlutterSession>,
-    ffi.Pointer<VtkFlutterRenderRequest>,
-    ffi.Pointer<VtkFlutterMetrics>,
+    VtkFlutterObjectHandle,
+    ffi.Pointer<VtkFlutterStatus>,
+  )
+>()
+external int vtk_flutter_object_destroy(
+  ffi.Pointer<VtkFlutterSession> session,
+  int object,
+  ffi.Pointer<VtkFlutterStatus> status,
+);
+
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<VtkFlutterSession>,
+    VtkFlutterObjectHandle,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Pointer<ffi.Char>>,
+    ffi.Pointer<VtkFlutterStatus>,
+  )
+>()
+external int vtk_flutter_object_invoke(
+  ffi.Pointer<VtkFlutterSession> session,
+  int object,
+  ffi.Pointer<ffi.Char> method_name,
+  ffi.Pointer<ffi.Char> arguments_json,
+  ffi.Pointer<ffi.Pointer<ffi.Char>> result_json,
+  ffi.Pointer<VtkFlutterStatus> status,
+);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Char>)>()
+external void vtk_flutter_string_free(ffi.Pointer<ffi.Char> value);
+
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<VtkFlutterSession>,
+    ffi.Pointer<VtkFlutterImageData>,
+    ffi.Pointer<VtkFlutterObjectHandle>,
+    ffi.Pointer<VtkFlutterStatus>,
+  )
+>()
+external int vtk_flutter_image_data_create(
+  ffi.Pointer<VtkFlutterSession> session,
+  ffi.Pointer<VtkFlutterImageData> image,
+  ffi.Pointer<VtkFlutterObjectHandle> out_object,
+  ffi.Pointer<VtkFlutterStatus> status,
+);
+
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<VtkFlutterSession>,
+    VtkFlutterObjectHandle,
+    ffi.Pointer<VtkFlutterViewport>,
+    ffi.Pointer<VtkFlutterFrameMetrics>,
     ffi.Pointer<VtkFlutterStatus>,
   )
 >()
 external int vtk_flutter_session_render(
   ffi.Pointer<VtkFlutterSession> session,
-  ffi.Pointer<VtkFlutterRenderRequest> request,
-  ffi.Pointer<VtkFlutterMetrics> metrics,
+  int renderer,
+  ffi.Pointer<VtkFlutterViewport> viewport,
+  ffi.Pointer<VtkFlutterFrameMetrics> metrics,
   ffi.Pointer<VtkFlutterStatus> status,
 );
 
@@ -86,12 +119,16 @@ final class VtkFlutterSession extends ffi.Opaque {}
 
 final class VtkFlutterTextureTarget extends ffi.Opaque {}
 
+typedef VtkFlutterObjectHandle = ffi.Uint32;
+typedef DartVtkFlutterObjectHandle = int;
+
 enum VtkFlutterStatusCode {
   VTK_FLUTTER_STATUS_OK(0),
   VTK_FLUTTER_STATUS_INVALID_ARGUMENT(1),
   VTK_FLUTTER_STATUS_INVALID_STATE(2),
-  VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE(3),
-  VTK_FLUTTER_STATUS_INTERNAL_ERROR(4);
+  VTK_FLUTTER_STATUS_NOT_SUPPORTED(3),
+  VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE(4),
+  VTK_FLUTTER_STATUS_INTERNAL_ERROR(5);
 
   final int value;
   const VtkFlutterStatusCode(this.value);
@@ -100,41 +137,50 @@ enum VtkFlutterStatusCode {
     0 => VTK_FLUTTER_STATUS_OK,
     1 => VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
     2 => VTK_FLUTTER_STATUS_INVALID_STATE,
-    3 => VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
-    4 => VTK_FLUTTER_STATUS_INTERNAL_ERROR,
+    3 => VTK_FLUTTER_STATUS_NOT_SUPPORTED,
+    4 => VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
+    5 => VTK_FLUTTER_STATUS_INTERNAL_ERROR,
     _ => throw ArgumentError('Unknown value for VtkFlutterStatusCode: $value'),
   };
 }
 
-enum VtkFlutterRenderMode {
-  VTK_FLUTTER_RENDER_OBLIQUE_MPR(1),
-  VTK_FLUTTER_RENDER_VOLUME_3D(2),
-  VTK_FLUTTER_RENDER_VOLUME_LOCATOR(3);
+enum VtkFlutterScalarType {
+  VTK_FLUTTER_SCALAR_UINT8(1),
+  VTK_FLUTTER_SCALAR_INT8(2),
+  VTK_FLUTTER_SCALAR_UINT16(3),
+  VTK_FLUTTER_SCALAR_INT16(4),
+  VTK_FLUTTER_SCALAR_UINT32(5),
+  VTK_FLUTTER_SCALAR_INT32(6),
+  VTK_FLUTTER_SCALAR_FLOAT32(7),
+  VTK_FLUTTER_SCALAR_FLOAT64(8);
 
   final int value;
-  const VtkFlutterRenderMode(this.value);
+  const VtkFlutterScalarType(this.value);
 
-  static VtkFlutterRenderMode fromValue(int value) => switch (value) {
-    1 => VTK_FLUTTER_RENDER_OBLIQUE_MPR,
-    2 => VTK_FLUTTER_RENDER_VOLUME_3D,
-    3 => VTK_FLUTTER_RENDER_VOLUME_LOCATOR,
-    _ => throw ArgumentError('Unknown value for VtkFlutterRenderMode: $value'),
+  static VtkFlutterScalarType fromValue(int value) => switch (value) {
+    1 => VTK_FLUTTER_SCALAR_UINT8,
+    2 => VTK_FLUTTER_SCALAR_INT8,
+    3 => VTK_FLUTTER_SCALAR_UINT16,
+    4 => VTK_FLUTTER_SCALAR_INT16,
+    5 => VTK_FLUTTER_SCALAR_UINT32,
+    6 => VTK_FLUTTER_SCALAR_INT32,
+    7 => VTK_FLUTTER_SCALAR_FLOAT32,
+    8 => VTK_FLUTTER_SCALAR_FLOAT64,
+    _ => throw ArgumentError('Unknown value for VtkFlutterScalarType: $value'),
   };
 }
 
-enum VtkFlutterPixelFormatV2 {
+enum VtkFlutterPixelFormat {
   VTK_FLUTTER_PIXEL_FORMAT_RGBA8888(1),
   VTK_FLUTTER_PIXEL_FORMAT_BGRA8888(2);
 
   final int value;
-  const VtkFlutterPixelFormatV2(this.value);
+  const VtkFlutterPixelFormat(this.value);
 
-  static VtkFlutterPixelFormatV2 fromValue(int value) => switch (value) {
+  static VtkFlutterPixelFormat fromValue(int value) => switch (value) {
     1 => VTK_FLUTTER_PIXEL_FORMAT_RGBA8888,
     2 => VTK_FLUTTER_PIXEL_FORMAT_BGRA8888,
-    _ => throw ArgumentError(
-      'Unknown value for VtkFlutterPixelFormatV2: $value',
-    ),
+    _ => throw ArgumentError('Unknown value for VtkFlutterPixelFormat: $value'),
   };
 }
 
@@ -142,7 +188,7 @@ final class VtkFlutterStatus extends ffi.Struct {
   @ffi.Int32()
   external int code;
 
-  @ffi.Array.multi([256])
+  @ffi.Array.multi([512])
   external ffi.Array<ffi.Char> message;
 }
 
@@ -154,80 +200,40 @@ final class VtkFlutterViewport extends ffi.Struct {
   external int height;
 }
 
-final class VtkFlutterVolume extends ffi.Struct {
-  external ffi.Pointer<ffi.Int16> voxels;
+final class VtkFlutterImageData extends ffi.Struct {
+  external ffi.Pointer<ffi.Void> values;
 
   @ffi.Uint64()
-  external int voxel_count;
+  external int value_count;
 
-  @ffi.Int32()
-  external int width;
-
-  @ffi.Int32()
-  external int height;
-
-  @ffi.Int32()
-  external int depth;
-
-  @ffi.Array.multi([16])
-  external ffi.Array<ffi.Double> index_to_patient;
-}
-
-final class VtkFlutterRenderRequest extends ffi.Struct {
-  @ffi.Int32()
-  external int mode;
-
-  external VtkFlutterViewport viewport;
-
-  @ffi.Double()
-  external double window_center;
-
-  @ffi.Double()
-  external double window_width;
-
-  @ffi.Array.multi([3])
-  external ffi.Array<ffi.Double> plane_origin;
-
-  @ffi.Array.multi([3])
-  external ffi.Array<ffi.Double> plane_normal;
-
-  @ffi.Double()
-  external double camera_azimuth_degrees;
-
-  @ffi.Double()
-  external double camera_elevation_degrees;
-
-  @ffi.Double()
-  external double camera_zoom;
-}
-
-final class VtkFlutterMetrics extends ffi.Struct {
   @ffi.Uint64()
-  external int volume_bytes;
+  external int byte_count;
 
+  @ffi.Int32()
+  external int scalar_type;
+
+  @ffi.Int32()
+  external int component_count;
+
+  @ffi.Array.multi([3])
+  external ffi.Array<ffi.Int32> dimensions;
+
+  @ffi.Array.multi([3])
+  external ffi.Array<ffi.Double> origin;
+
+  @ffi.Array.multi([3])
+  external ffi.Array<ffi.Double> spacing;
+
+  @ffi.Array.multi([9])
+  external ffi.Array<ffi.Double> direction;
+}
+
+final class VtkFlutterFrameMetrics extends ffi.Struct {
   @ffi.Uint64()
   external int frame_bytes;
 
   @ffi.Uint64()
   external int surface_allocation_bytes;
-
-  @ffi.Uint64()
-  external int surface_checksum;
-
-  @ffi.Uint64()
-  external int surface_changed_pixels;
-
-  @ffi.Uint64()
-  external int surface_unique_byte_values;
-
-  @ffi.Uint64()
-  external int cpu_checksum;
-
-  @ffi.Uint64()
-  external int cpu_changed_pixels;
-
-  @ffi.Uint64()
-  external int cpu_unique_byte_values;
 
   @ffi.Double()
   external double render_ms;
@@ -248,13 +254,13 @@ final class VtkFlutterMetrics extends ffi.Struct {
   external int frame_height;
 
   @ffi.Int32()
-  external int patient_to_clip_valid;
+  external int world_to_clip_valid;
 
   @ffi.Array.multi([16])
-  external ffi.Array<ffi.Double> patient_to_clip;
+  external ffi.Array<ffi.Double> world_to_clip;
 }
 
-final class VtkFlutterCpuFrameV2 extends ffi.Struct {
+final class VtkFlutterCpuFrame extends ffi.Struct {
   @ffi.Uint32()
   external int struct_size;
 
@@ -273,44 +279,44 @@ final class VtkFlutterCpuFrameV2 extends ffi.Struct {
   external int pixel_format;
 }
 
-typedef VtkFlutterBeginFrameCallbackV2Function =
+typedef VtkFlutterBeginFrameCallbackFunction =
     ffi.Int32 Function(
       ffi.Pointer<ffi.Void> user_data,
       ffi.Pointer<VtkFlutterViewport> viewport,
-      ffi.Pointer<VtkFlutterCpuFrameV2> frame,
+      ffi.Pointer<VtkFlutterCpuFrame> frame,
       ffi.Pointer<VtkFlutterStatus> status,
     );
-typedef DartVtkFlutterBeginFrameCallbackV2Function =
+typedef DartVtkFlutterBeginFrameCallbackFunction =
     int Function(
       ffi.Pointer<ffi.Void> user_data,
       ffi.Pointer<VtkFlutterViewport> viewport,
-      ffi.Pointer<VtkFlutterCpuFrameV2> frame,
+      ffi.Pointer<VtkFlutterCpuFrame> frame,
       ffi.Pointer<VtkFlutterStatus> status,
     );
-typedef VtkFlutterBeginFrameCallbackV2 =
-    ffi.Pointer<ffi.NativeFunction<VtkFlutterBeginFrameCallbackV2Function>>;
-typedef VtkFlutterEndFrameCallbackV2Function =
+typedef VtkFlutterBeginFrameCallback =
+    ffi.Pointer<ffi.NativeFunction<VtkFlutterBeginFrameCallbackFunction>>;
+typedef VtkFlutterEndFrameCallbackFunction =
     ffi.Int32 Function(
       ffi.Pointer<ffi.Void> user_data,
-      ffi.Pointer<VtkFlutterMetrics> metrics,
+      ffi.Pointer<VtkFlutterFrameMetrics> metrics,
       ffi.Pointer<VtkFlutterStatus> status,
     );
-typedef DartVtkFlutterEndFrameCallbackV2Function =
+typedef DartVtkFlutterEndFrameCallbackFunction =
     int Function(
       ffi.Pointer<ffi.Void> user_data,
-      ffi.Pointer<VtkFlutterMetrics> metrics,
+      ffi.Pointer<VtkFlutterFrameMetrics> metrics,
       ffi.Pointer<VtkFlutterStatus> status,
     );
-typedef VtkFlutterEndFrameCallbackV2 =
-    ffi.Pointer<ffi.NativeFunction<VtkFlutterEndFrameCallbackV2Function>>;
-typedef VtkFlutterCancelFrameCallbackV2Function =
+typedef VtkFlutterEndFrameCallback =
+    ffi.Pointer<ffi.NativeFunction<VtkFlutterEndFrameCallbackFunction>>;
+typedef VtkFlutterCancelFrameCallbackFunction =
     ffi.Void Function(ffi.Pointer<ffi.Void> user_data);
-typedef DartVtkFlutterCancelFrameCallbackV2Function =
+typedef DartVtkFlutterCancelFrameCallbackFunction =
     void Function(ffi.Pointer<ffi.Void> user_data);
-typedef VtkFlutterCancelFrameCallbackV2 =
-    ffi.Pointer<ffi.NativeFunction<VtkFlutterCancelFrameCallbackV2Function>>;
+typedef VtkFlutterCancelFrameCallback =
+    ffi.Pointer<ffi.NativeFunction<VtkFlutterCancelFrameCallbackFunction>>;
 
-final class VtkFlutterFrameCallbacksV2 extends ffi.Struct {
+final class VtkFlutterFrameCallbacks extends ffi.Struct {
   @ffi.Uint32()
   external int struct_size;
 
@@ -319,14 +325,14 @@ final class VtkFlutterFrameCallbacksV2 extends ffi.Struct {
 
   external ffi.Pointer<ffi.Void> user_data;
 
-  external VtkFlutterBeginFrameCallbackV2 begin_frame;
+  external VtkFlutterBeginFrameCallback begin_frame;
 
-  external VtkFlutterEndFrameCallbackV2 end_frame;
+  external VtkFlutterEndFrameCallback end_frame;
 
-  external VtkFlutterCancelFrameCallbackV2 cancel_frame;
+  external VtkFlutterCancelFrameCallback cancel_frame;
 }
 
-final class VtkFlutterCoreApiV2 extends ffi.Struct {
+final class VtkFlutterPresentationApi extends ffi.Struct {
   @ffi.Uint32()
   external int struct_size;
 
@@ -337,66 +343,6 @@ final class VtkFlutterCoreApiV2 extends ffi.Struct {
     ffi.NativeFunction<ffi.Void Function(ffi.Pointer<VtkFlutterStatus> status)>
   >
   status_clear;
-
-  external ffi.Pointer<
-    ffi.NativeFunction<
-      ffi.Int32 Function(
-        ffi.Pointer<ffi.Pointer<VtkFlutterSession>> out_session,
-        ffi.Pointer<VtkFlutterStatus> status,
-      )
-    >
-  >
-  session_create;
-
-  external ffi.Pointer<
-    ffi.NativeFunction<
-      ffi.Void Function(ffi.Pointer<VtkFlutterSession> session)
-    >
-  >
-  session_destroy;
-
-  external ffi.Pointer<
-    ffi.NativeFunction<
-      ffi.Int32 Function(
-        ffi.Pointer<VtkFlutterVolume> volume,
-        ffi.Pointer<VtkFlutterStatus> status,
-      )
-    >
-  >
-  validate_volume;
-
-  external ffi.Pointer<
-    ffi.NativeFunction<
-      ffi.Int32 Function(
-        ffi.Pointer<VtkFlutterSession> session,
-        ffi.Pointer<VtkFlutterVolume> volume,
-        ffi.Pointer<VtkFlutterStatus> status,
-      )
-    >
-  >
-  session_set_volume;
-
-  external ffi.Pointer<
-    ffi.NativeFunction<
-      ffi.Int32 Function(
-        ffi.Pointer<VtkFlutterRenderRequest> request,
-        ffi.Pointer<VtkFlutterStatus> status,
-      )
-    >
-  >
-  validate_render_request;
-
-  external ffi.Pointer<
-    ffi.NativeFunction<
-      ffi.Int32 Function(
-        ffi.Pointer<VtkFlutterSession> session,
-        ffi.Pointer<VtkFlutterRenderRequest> request,
-        ffi.Pointer<VtkFlutterMetrics> metrics,
-        ffi.Pointer<VtkFlutterStatus> status,
-      )
-    >
-  >
-  session_render;
 
   external ffi.Pointer<
     ffi.NativeFunction<
@@ -423,7 +369,7 @@ final class VtkFlutterCoreApiV2 extends ffi.Struct {
   external ffi.Pointer<
     ffi.NativeFunction<
       ffi.Int32 Function(
-        ffi.Pointer<VtkFlutterFrameCallbacksV2> callbacks,
+        ffi.Pointer<VtkFlutterFrameCallbacks> callbacks,
         ffi.Pointer<ffi.Pointer<VtkFlutterTextureTarget>> out_target,
         ffi.Pointer<VtkFlutterStatus> status,
       )
@@ -442,12 +388,12 @@ final class VtkFlutterCoreApiV2 extends ffi.Struct {
   texture_target_destroy;
 }
 
-const int VTK_FLUTTER_ABI_VERSION = 1;
+const int VTK_FLUTTER_ABI_VERSION = 3;
 
-const int VTK_FLUTTER_CORE_API_VERSION_2 = 2;
+const int VTK_FLUTTER_PRESENTATION_API_VERSION = 1;
 
-const int VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2 = 2;
+const int VTK_FLUTTER_FRAME_CALLBACKS_VERSION = 1;
 
-const int VTK_FLUTTER_CPU_FRAME_VERSION_2 = 2;
+const int VTK_FLUTTER_CPU_FRAME_VERSION = 1;
 
-const int VTK_FLUTTER_STATUS_MESSAGE_CAPACITY = 256;
+const int VTK_FLUTTER_STATUS_MESSAGE_CAPACITY = 512;

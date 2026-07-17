@@ -2,12 +2,23 @@
 #define VTK_FLUTTER_SESSION_H_
 
 #include "callback_render_target.h"
+#include "vtk_flutter.h"
+
+#include <vtkSmartPointer.h>
 
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+
+VTK_ABI_NAMESPACE_BEGIN
+class vtkObjectManager;
+class vtkRenderer;
+VTK_ABI_NAMESPACE_END
+
+struct vtkSessionImpl;
+typedef struct vtkSessionImpl *vtkSession;
 
 namespace vtk_flutter {
 class Session;
@@ -21,15 +32,10 @@ class InvalidState final : public std::runtime_error {
 public:
   explicit InvalidState(const char *message);
 };
-
 } // namespace vtk_flutter
 
-// The public header exposes only this tag. ABI-v2 construction and destruction
-// happen inside vtk_flutter.cxx, so no definition or C++ type crosses the C
-// boundary.
 struct VtkFlutterTextureTarget {
-  explicit VtkFlutterTextureTarget(
-      const VtkFlutterFrameCallbacksV2 &callbacks);
+  explicit VtkFlutterTextureTarget(const VtkFlutterFrameCallbacks &callbacks);
   ~VtkFlutterTextureTarget();
 
   VtkFlutterTextureTarget(const VtkFlutterTextureTarget &) = delete;
@@ -42,9 +48,9 @@ private:
 
   void Attach(vtk_flutter::Session *session);
   void Detach(vtk_flutter::Session *session);
-  void Render(vtk_flutter::PreparedView view,
+  void Render(vtkSmartPointer<vtkRenderer> renderer,
               const VtkFlutterViewport &viewport,
-              VtkFlutterMetrics &metrics);
+              VtkFlutterFrameMetrics &metrics);
 
   std::unique_ptr<vtk_flutter::CallbackRenderTarget> render_target_;
   std::mutex attachment_mutex_;
@@ -55,20 +61,22 @@ private:
 namespace vtk_flutter {
 class Session final {
 public:
-  explicit Session(std::unique_ptr<RenderTarget> render_target = nullptr);
+  Session();
   ~Session();
 
   Session(const Session &) = delete;
   Session &operator=(const Session &) = delete;
 
-  void SetVolume(const VtkFlutterVolume &volume);
-  void Render(const VtkFlutterRenderRequest &request,
-              VtkFlutterMetrics &metrics);
-  void SetRenderTarget(std::unique_ptr<RenderTarget> render_target);
+  VtkFlutterObjectHandle CreateObject(const char *class_name);
+  void DestroyObject(VtkFlutterObjectHandle object);
+  std::string Invoke(VtkFlutterObjectHandle object, const char *method_name,
+                     const char *arguments_json);
+  VtkFlutterObjectHandle CreateImageData(const VtkFlutterImageData &image);
+  void Render(VtkFlutterObjectHandle renderer,
+              const VtkFlutterViewport &viewport,
+              VtkFlutterFrameMetrics &metrics);
   void AttachTextureTarget(VtkFlutterTextureTarget &target);
   void DetachTextureTarget(VtkFlutterTextureTarget &target);
-
-  const VolumePipeline &Pipeline() const;
 
 private:
   class Operation final {
@@ -84,21 +92,15 @@ private:
     std::unique_lock<std::recursive_mutex> lock_;
   };
 
-  VolumePipeline pipeline_;
-  std::unique_ptr<RenderTarget> legacy_target_;
+  vtkSession session_ = nullptr;
+  vtkObjectManager *manager_ = nullptr;
   VtkFlutterTextureTarget *attached_target_ = nullptr;
   std::recursive_mutex operation_mutex_;
   bool operation_active_ = false;
 };
 } // namespace vtk_flutter
 
-// Platform adapters may include this internal header and construct the opaque C
-// handle with their RenderTarget. Core-created handles intentionally have no
-// target and cannot render.
 struct VtkFlutterSession {
-  explicit VtkFlutterSession(
-      std::unique_ptr<vtk_flutter::RenderTarget> render_target = nullptr);
-
   vtk_flutter::Session value;
 };
 

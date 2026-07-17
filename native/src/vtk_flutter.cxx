@@ -3,10 +3,12 @@
 #include "session.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <memory>
-#include <new>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -16,7 +18,7 @@ void SetStatus(VtkFlutterStatus *status, VtkFlutterStatusCode code,
     return;
   }
   status->code = static_cast<int32_t>(code);
-  const auto length = std::min(message.size(), sizeof(status->message) - 1);
+  const auto length = std::min(message.size(), sizeof(status->message) - 1U);
   std::copy_n(message.data(), length, status->message);
   status->message[length] = '\0';
 }
@@ -28,8 +30,9 @@ int32_t TranslateErrors(VtkFlutterStatus *status, Action action) {
     action();
     return VTK_FLUTTER_STATUS_OK;
   } catch (const vtk_flutter::FrameCallbackFailure &exception) {
-    const auto code = static_cast<VtkFlutterStatusCode>(exception.Code());
-    SetStatus(status, code, exception.what());
+    SetStatus(status,
+              static_cast<VtkFlutterStatusCode>(exception.Code()),
+              exception.what());
     return exception.Code();
   } catch (const vtk_flutter::InvalidState &exception) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE, exception.what());
@@ -50,10 +53,77 @@ int32_t TranslateErrors(VtkFlutterStatus *status, Action action) {
     return VTK_FLUTTER_STATUS_INTERNAL_ERROR;
   }
 }
+
+int32_t VTK_FLUTTER_CALL SessionAttachTextureTarget(
+    VtkFlutterSession *session, VtkFlutterTextureTarget *target,
+    VtkFlutterStatus *status) {
+  if (session == nullptr || target == nullptr) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+              "session and target are required");
+    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
+  }
+  return TranslateErrors(
+      status, [&] { session->value.AttachTextureTarget(*target); });
+}
+
+int32_t VTK_FLUTTER_CALL SessionDetachTextureTarget(
+    VtkFlutterSession *session, VtkFlutterTextureTarget *target,
+    VtkFlutterStatus *status) {
+  if (session == nullptr || target == nullptr) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+              "session and target are required");
+    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
+  }
+  return TranslateErrors(
+      status, [&] { session->value.DetachTextureTarget(*target); });
+}
+
+int32_t VTK_FLUTTER_CALL TextureTargetCreate(
+    const VtkFlutterFrameCallbacks *callbacks,
+    VtkFlutterTextureTarget **out_target, VtkFlutterStatus *status) {
+  if (callbacks == nullptr || out_target == nullptr) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+              "callbacks and out_target are required");
+    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
+  }
+  *out_target = nullptr;
+  return TranslateErrors(status, [&] {
+    auto target = std::make_unique<VtkFlutterTextureTarget>(*callbacks);
+    *out_target = target.release();
+  });
+}
+
+int32_t VTK_FLUTTER_CALL TextureTargetDestroy(
+    VtkFlutterTextureTarget *target, VtkFlutterStatus *status) {
+  if (target == nullptr) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+              "target is required");
+    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
+  }
+  return TranslateErrors(status, [&] {
+    target->MarkDestroying();
+    delete target;
+  });
+}
+
+const VtkFlutterPresentationApi kPresentationApi = {
+    sizeof(VtkFlutterPresentationApi),
+    VTK_FLUTTER_PRESENTATION_API_VERSION,
+    vtk_flutter_status_clear,
+    SessionAttachTextureTarget,
+    SessionDetachTextureTarget,
+    TextureTargetCreate,
+    TextureTargetDestroy,
+};
 } // namespace
 
 uint32_t VTK_FLUTTER_CALL vtk_flutter_abi_version(void) {
   return VTK_FLUTTER_ABI_VERSION;
+}
+
+const VtkFlutterPresentationApi *VTK_FLUTTER_CALL
+vtk_flutter_get_presentation_api(void) {
+  return &kPresentationApi;
 }
 
 void VTK_FLUTTER_CALL vtk_flutter_status_clear(VtkFlutterStatus *status) {
@@ -74,138 +144,97 @@ int32_t VTK_FLUTTER_CALL vtk_flutter_session_create(
   });
 }
 
-void VTK_FLUTTER_CALL vtk_flutter_session_destroy(VtkFlutterSession *session) {
+void VTK_FLUTTER_CALL vtk_flutter_session_destroy(
+    VtkFlutterSession *session) {
   try {
     delete session;
   } catch (...) {
-    // Destruction has no status channel in the legacy ABI. Never unwind into C.
   }
 }
 
-int32_t VTK_FLUTTER_CALL vtk_flutter_validate_volume(
-    const VtkFlutterVolume *volume, VtkFlutterStatus *status) {
-  if (volume == nullptr) {
+int32_t VTK_FLUTTER_CALL vtk_flutter_object_create(
+    VtkFlutterSession *session, const char *class_name,
+    VtkFlutterObjectHandle *out_object, VtkFlutterStatus *status) {
+  if (session == nullptr || class_name == nullptr || out_object == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "volume is required");
+              "session, class_name, and out_object are required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
+  *out_object = 0;
   return TranslateErrors(
-      status, [&] { vtk_flutter::VolumePipeline::ValidateVolume(*volume); });
+      status, [&] { *out_object = session->value.CreateObject(class_name); });
 }
 
-int32_t VTK_FLUTTER_CALL vtk_flutter_session_set_volume(
-    VtkFlutterSession *session, const VtkFlutterVolume *volume,
+int32_t VTK_FLUTTER_CALL vtk_flutter_object_destroy(
+    VtkFlutterSession *session, VtkFlutterObjectHandle object,
     VtkFlutterStatus *status) {
-  if (session == nullptr || volume == nullptr) {
+  if (session == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "session and volume are required");
+              "session is required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
-  return TranslateErrors(status, [&] { session->value.SetVolume(*volume); });
+  return TranslateErrors(status,
+                         [&] { session->value.DestroyObject(object); });
 }
 
-int32_t VTK_FLUTTER_CALL vtk_flutter_validate_render_request(
-    const VtkFlutterRenderRequest *request, VtkFlutterStatus *status) {
-  if (request == nullptr) {
+int32_t VTK_FLUTTER_CALL vtk_flutter_object_invoke(
+    VtkFlutterSession *session, VtkFlutterObjectHandle object,
+    const char *method_name, const char *arguments_json, char **result_json,
+    VtkFlutterStatus *status) {
+  if (session == nullptr || method_name == nullptr ||
+      arguments_json == nullptr || result_json == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "render request is required");
+              "session, method_name, arguments_json, and result_json are "
+              "required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
+  *result_json = nullptr;
   return TranslateErrors(status, [&] {
-    vtk_flutter::VolumePipeline::ValidateRenderRequest(*request);
+    const auto result =
+        session->value.Invoke(object, method_name, arguments_json);
+    auto *buffer = static_cast<char *>(std::malloc(result.size() + 1U));
+    if (buffer == nullptr) {
+      throw std::bad_alloc();
+    }
+    std::memcpy(buffer, result.c_str(), result.size() + 1U);
+    *result_json = buffer;
+  });
+}
+
+void VTK_FLUTTER_CALL vtk_flutter_string_free(char *value) {
+  std::free(value);
+}
+
+int32_t VTK_FLUTTER_CALL vtk_flutter_image_data_create(
+    VtkFlutterSession *session, const VtkFlutterImageData *image,
+    VtkFlutterObjectHandle *out_object, VtkFlutterStatus *status) {
+  if (session == nullptr || image == nullptr || out_object == nullptr) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+              "session, image, and out_object are required");
+    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
+  }
+  *out_object = 0;
+  return TranslateErrors(status, [&] {
+    *out_object = session->value.CreateImageData(*image);
   });
 }
 
 int32_t VTK_FLUTTER_CALL vtk_flutter_session_render(
-    VtkFlutterSession *session, const VtkFlutterRenderRequest *request,
-    VtkFlutterMetrics *metrics, VtkFlutterStatus *status) {
-  if (session == nullptr || request == nullptr || metrics == nullptr) {
+    VtkFlutterSession *session, VtkFlutterObjectHandle renderer,
+    const VtkFlutterViewport *viewport, VtkFlutterFrameMetrics *metrics,
+    VtkFlutterStatus *status) {
+  if (session == nullptr || viewport == nullptr || metrics == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "session, request, and metrics are required");
+              "session, viewport, and metrics are required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
   *metrics = {};
-  VtkFlutterMetrics rendered_metrics{};
+  VtkFlutterFrameMetrics rendered_metrics{};
   const auto code = TranslateErrors(status, [&] {
-    session->value.Render(*request, rendered_metrics);
+    session->value.Render(renderer, *viewport, rendered_metrics);
   });
   if (code == VTK_FLUTTER_STATUS_OK) {
     *metrics = rendered_metrics;
   }
   return code;
-}
-
-namespace {
-int32_t VTK_FLUTTER_CALL SessionAttachTextureTargetV2(
-    VtkFlutterSession *session, VtkFlutterTextureTarget *target,
-    VtkFlutterStatus *status) {
-  if (session == nullptr || target == nullptr) {
-    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "session and target are required");
-    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
-  }
-  return TranslateErrors(
-      status, [&] { session->value.AttachTextureTarget(*target); });
-}
-
-int32_t VTK_FLUTTER_CALL SessionDetachTextureTargetV2(
-    VtkFlutterSession *session, VtkFlutterTextureTarget *target,
-    VtkFlutterStatus *status) {
-  if (session == nullptr || target == nullptr) {
-    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "session and target are required");
-    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
-  }
-  return TranslateErrors(
-      status, [&] { session->value.DetachTextureTarget(*target); });
-}
-
-int32_t VTK_FLUTTER_CALL TextureTargetCreateV2(
-    const VtkFlutterFrameCallbacksV2 *callbacks,
-    VtkFlutterTextureTarget **out_target, VtkFlutterStatus *status) {
-  if (callbacks == nullptr || out_target == nullptr) {
-    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "callbacks and out_target are required");
-    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
-  }
-  *out_target = nullptr;
-  return TranslateErrors(status, [&] {
-    auto target = std::make_unique<VtkFlutterTextureTarget>(*callbacks);
-    *out_target = target.release();
-  });
-}
-
-int32_t VTK_FLUTTER_CALL TextureTargetDestroyV2(
-    VtkFlutterTextureTarget *target, VtkFlutterStatus *status) {
-  if (target == nullptr) {
-    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "target is required");
-    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
-  }
-  return TranslateErrors(status, [&] {
-    target->MarkDestroying();
-    delete target;
-  });
-}
-
-const VtkFlutterCoreApiV2 kCoreApiV2 = {
-    sizeof(VtkFlutterCoreApiV2),
-    VTK_FLUTTER_CORE_API_VERSION_2,
-    vtk_flutter_status_clear,
-    vtk_flutter_session_create,
-    vtk_flutter_session_destroy,
-    vtk_flutter_validate_volume,
-    vtk_flutter_session_set_volume,
-    vtk_flutter_validate_render_request,
-    vtk_flutter_session_render,
-    SessionAttachTextureTargetV2,
-    SessionDetachTextureTargetV2,
-    TextureTargetCreateV2,
-    TextureTargetDestroyV2,
-};
-} // namespace
-
-const VtkFlutterCoreApiV2 *VTK_FLUTTER_CALL
-vtk_flutter_get_core_api_v2(void) {
-  return &kCoreApiV2;
 }

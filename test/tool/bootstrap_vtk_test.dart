@@ -67,6 +67,8 @@ void main() {
             .map((module) => '-DVTK_MODULE_ENABLE_VTK_$module=YES')
             .toSet(),
       );
+      expect(plan.first.arguments, contains('-DVTK_ENABLE_WRAPPING=ON'));
+      expect(plan.first.arguments, contains('-DVTK_WRAP_SERIALIZATION=ON'));
     });
 
     test('prepares host tools before an iOS cross-build', () {
@@ -85,6 +87,8 @@ void main() {
         plan.first.arguments,
         contains('-DVTK_BUILD_COMPILE_TOOLS_ONLY=ON'),
       );
+      expect(plan.first.arguments, contains('-DVTK_ENABLE_WRAPPING=ON'));
+      expect(plan.first.arguments, contains('-DVTK_WRAP_SERIALIZATION=ON'));
       expect(
         plan[2].arguments,
         contains('-DCMAKE_OSX_SYSROOT=iphonesimulator'),
@@ -181,8 +185,8 @@ void main() {
       sourceDirectory.deleteSync(recursive: true);
     });
 
-    test('accepts VTK 9.5.2 sources', () {
-      _writeSourceVersion(directory: sourceDirectory, version: '9.5.2');
+    test('accepts VTK 9.6.2 sources', () {
+      _writeSourceVersion(directory: sourceDirectory, version: '9.6.2');
 
       expect(
         () => validateVtkSourceDirectory(sourceDirectory),

@@ -126,7 +126,7 @@ List<CheckCommand> createChecks({
         'native',
         '-B',
         '.dart_tool/native-test',
-        '-DVTK_DIR=$root/.dart_tool/vtk/9.5.2/$target/install/lib/cmake/vtk-9.5',
+        '-DVTK_DIR=$root/.dart_tool/vtk/9.6.2/$target/install/lib/cmake/vtk-9.6',
         '-DBUILD_TESTING=ON',
       ],
       workingDirectory: null,

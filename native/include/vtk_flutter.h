@@ -3,12 +3,11 @@
 
 #include <stdint.h>
 
-// The legacy direct-export ABI remains version 1 during the v2 migration.
-#define VTK_FLUTTER_ABI_VERSION 1U
-#define VTK_FLUTTER_CORE_API_VERSION_2 2U
-#define VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2 2U
-#define VTK_FLUTTER_CPU_FRAME_VERSION_2 2U
-#define VTK_FLUTTER_STATUS_MESSAGE_CAPACITY 256U
+#define VTK_FLUTTER_ABI_VERSION 3U
+#define VTK_FLUTTER_PRESENTATION_API_VERSION 1U
+#define VTK_FLUTTER_FRAME_CALLBACKS_VERSION 1U
+#define VTK_FLUTTER_CPU_FRAME_VERSION 1U
+#define VTK_FLUTTER_STATUS_MESSAGE_CAPACITY 512U
 
 #if defined(VTK_FLUTTER_STATIC)
 #define VTK_FLUTTER_EXPORT
@@ -34,25 +33,32 @@ extern "C" {
 
 typedef struct VtkFlutterSession VtkFlutterSession;
 typedef struct VtkFlutterTextureTarget VtkFlutterTextureTarget;
+typedef uint32_t VtkFlutterObjectHandle;
 
 typedef enum VtkFlutterStatusCode {
   VTK_FLUTTER_STATUS_OK = 0,
   VTK_FLUTTER_STATUS_INVALID_ARGUMENT = 1,
   VTK_FLUTTER_STATUS_INVALID_STATE = 2,
-  VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE = 3,
-  VTK_FLUTTER_STATUS_INTERNAL_ERROR = 4,
+  VTK_FLUTTER_STATUS_NOT_SUPPORTED = 3,
+  VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE = 4,
+  VTK_FLUTTER_STATUS_INTERNAL_ERROR = 5,
 } VtkFlutterStatusCode;
 
-typedef enum VtkFlutterRenderMode {
-  VTK_FLUTTER_RENDER_OBLIQUE_MPR = 1,
-  VTK_FLUTTER_RENDER_VOLUME_3D = 2,
-  VTK_FLUTTER_RENDER_VOLUME_LOCATOR = 3,
-} VtkFlutterRenderMode;
+typedef enum VtkFlutterScalarType {
+  VTK_FLUTTER_SCALAR_UINT8 = 1,
+  VTK_FLUTTER_SCALAR_INT8 = 2,
+  VTK_FLUTTER_SCALAR_UINT16 = 3,
+  VTK_FLUTTER_SCALAR_INT16 = 4,
+  VTK_FLUTTER_SCALAR_UINT32 = 5,
+  VTK_FLUTTER_SCALAR_INT32 = 6,
+  VTK_FLUTTER_SCALAR_FLOAT32 = 7,
+  VTK_FLUTTER_SCALAR_FLOAT64 = 8,
+} VtkFlutterScalarType;
 
-typedef enum VtkFlutterPixelFormatV2 {
+typedef enum VtkFlutterPixelFormat {
   VTK_FLUTTER_PIXEL_FORMAT_RGBA8888 = 1,
   VTK_FLUTTER_PIXEL_FORMAT_BGRA8888 = 2,
-} VtkFlutterPixelFormatV2;
+} VtkFlutterPixelFormat;
 
 typedef struct VtkFlutterStatus {
   int32_t code;
@@ -64,122 +70,70 @@ typedef struct VtkFlutterViewport {
   int32_t height;
 } VtkFlutterViewport;
 
-// voxels are signed 16-bit, x-fastest, and deep-copied by set_volume.
-// index_to_patient is a row-major 4x4 affine from voxel indices to patient
-// millimeters.
-typedef struct VtkFlutterVolume {
-  const int16_t *voxels;
-  uint64_t voxel_count;
-  int32_t width;
-  int32_t height;
-  int32_t depth;
-  double index_to_patient[16];
-} VtkFlutterVolume;
+// The core deep-copies values before this call returns. Values are x-fastest.
+// direction is a row-major 3x3 world transform for the image axes.
+typedef struct VtkFlutterImageData {
+  const void *values;
+  uint64_t value_count;
+  uint64_t byte_count;
+  int32_t scalar_type;
+  int32_t component_count;
+  int32_t dimensions[3];
+  double origin[3];
+  double spacing[3];
+  double direction[9];
+} VtkFlutterImageData;
 
-typedef struct VtkFlutterRenderRequest {
-  int32_t mode;
-  VtkFlutterViewport viewport;
-  double window_center;
-  double window_width;
-  double plane_origin[3];
-  double plane_normal[3];
-  double camera_azimuth_degrees;
-  double camera_elevation_degrees;
-  double camera_zoom;
-} VtkFlutterRenderRequest;
-
-typedef struct VtkFlutterMetrics {
-  uint64_t volume_bytes;
+typedef struct VtkFlutterFrameMetrics {
   uint64_t frame_bytes;
   uint64_t surface_allocation_bytes;
-  uint64_t surface_checksum;
-  uint64_t surface_changed_pixels;
-  uint64_t surface_unique_byte_values;
-  uint64_t cpu_checksum;
-  uint64_t cpu_changed_pixels;
-  uint64_t cpu_unique_byte_values;
   double render_ms;
   double surface_submit_ms;
   double gpu_sync_wait_ms;
   double cpu_readback_ms;
   int32_t frame_width;
   int32_t frame_height;
-  int32_t patient_to_clip_valid;
-  double patient_to_clip[16];
-} VtkFlutterMetrics;
+  int32_t world_to_clip_valid;
+  double world_to_clip[16];
+} VtkFlutterFrameMetrics;
 
-// Writable CPU storage supplied by begin_frame. The descriptor and pixels stay
-// caller-owned. The core writes exactly width * 4 bytes to each top-down row,
-// using the viewport passed to begin_frame. capacity_bytes must cover the last
-// byte written, including row padding. The core does not retain the descriptor
-// or pixels after end_frame/cancel_frame returns.
-typedef struct VtkFlutterCpuFrameV2 {
+// Writable CPU storage supplied by begin_frame. The core writes exactly
+// width * 4 bytes to every top-down row and retains no pointer after the
+// matching end_frame or cancel_frame call.
+typedef struct VtkFlutterCpuFrame {
   uint32_t struct_size;
   uint32_t version;
   uint8_t *pixels;
   uint64_t capacity_bytes;
   uint64_t row_bytes;
   int32_t pixel_format;
-} VtkFlutterCpuFrameV2;
+} VtkFlutterCpuFrame;
 
-// A platform supplies these callbacks to texture_target_create. The core
-// copies the table; the table itself need not outlive target creation.
-// user_data and everything it references must remain valid until the target is
-// detached and successfully destroyed.
-//
-// begin_frame locks/allocates presentation storage and fills frame. end_frame
-// publishes the completed frame. If rendering or copying fails after a
-// successful begin_frame, cancel_frame releases that storage. An end_frame
-// failure is also followed by best-effort cancel_frame. Callbacks may fill
-// status with a bounded diagnostic and must not re-enter the same session.
-typedef int32_t(VTK_FLUTTER_CALL *VtkFlutterBeginFrameCallbackV2)(
+typedef int32_t(VTK_FLUTTER_CALL *VtkFlutterBeginFrameCallback)(
     void *user_data, const VtkFlutterViewport *viewport,
-    VtkFlutterCpuFrameV2 *frame, VtkFlutterStatus *status);
+    VtkFlutterCpuFrame *frame, VtkFlutterStatus *status);
 
-typedef int32_t(VTK_FLUTTER_CALL *VtkFlutterEndFrameCallbackV2)(
-    void *user_data, const VtkFlutterMetrics *metrics,
+typedef int32_t(VTK_FLUTTER_CALL *VtkFlutterEndFrameCallback)(
+    void *user_data, const VtkFlutterFrameMetrics *metrics,
     VtkFlutterStatus *status);
 
-typedef void(VTK_FLUTTER_CALL *VtkFlutterCancelFrameCallbackV2)(
-    void *user_data);
+typedef void(VTK_FLUTTER_CALL *VtkFlutterCancelFrameCallback)(void *user_data);
 
-typedef struct VtkFlutterFrameCallbacksV2 {
+typedef struct VtkFlutterFrameCallbacks {
   uint32_t struct_size;
   uint32_t version;
   void *user_data;
-  VtkFlutterBeginFrameCallbackV2 begin_frame;
-  VtkFlutterEndFrameCallbackV2 end_frame;
-  VtkFlutterCancelFrameCallbackV2 cancel_frame;
-} VtkFlutterFrameCallbacksV2;
+  VtkFlutterBeginFrameCallback begin_frame;
+  VtkFlutterEndFrameCallback end_frame;
+  VtkFlutterCancelFrameCallback cancel_frame;
+} VtkFlutterFrameCallbacks;
 
-// ABI v2 is exposed as one immutable, process-lifetime function table. A
-// caller must check version and struct_size before reading function pointers.
-// Texture target handles are created and destroyed only by this table. Their
-// VTK render window and all C++ state remain inside the core. The caller must
-// detach a target before destroying it. A target can be attached to at most one
-// session at a time.
-//
-// All operations on one live session are synchronous and serialized. Calls
-// from different threads wait for the active operation. Re-entering that same
-// session from a frame callback fails with VTK_FLUTTER_STATUS_INVALID_STATE.
-// Session destruction must not race another operation or occur in a callback.
-typedef struct VtkFlutterCoreApiV2 {
+// Platform plugins use only this table. Pipeline construction and rendering
+// are direct Dart FFI calls to the exports below.
+typedef struct VtkFlutterPresentationApi {
   uint32_t struct_size;
   uint32_t version;
   void(VTK_FLUTTER_CALL *status_clear)(VtkFlutterStatus *status);
-  int32_t(VTK_FLUTTER_CALL *session_create)(
-      VtkFlutterSession **out_session, VtkFlutterStatus *status);
-  void(VTK_FLUTTER_CALL *session_destroy)(VtkFlutterSession *session);
-  int32_t(VTK_FLUTTER_CALL *validate_volume)(
-      const VtkFlutterVolume *volume, VtkFlutterStatus *status);
-  int32_t(VTK_FLUTTER_CALL *session_set_volume)(
-      VtkFlutterSession *session, const VtkFlutterVolume *volume,
-      VtkFlutterStatus *status);
-  int32_t(VTK_FLUTTER_CALL *validate_render_request)(
-      const VtkFlutterRenderRequest *request, VtkFlutterStatus *status);
-  int32_t(VTK_FLUTTER_CALL *session_render)(
-      VtkFlutterSession *session, const VtkFlutterRenderRequest *request,
-      VtkFlutterMetrics *metrics, VtkFlutterStatus *status);
   int32_t(VTK_FLUTTER_CALL *session_attach_texture_target)(
       VtkFlutterSession *session, VtkFlutterTextureTarget *target,
       VtkFlutterStatus *status);
@@ -187,45 +141,52 @@ typedef struct VtkFlutterCoreApiV2 {
       VtkFlutterSession *session, VtkFlutterTextureTarget *target,
       VtkFlutterStatus *status);
   int32_t(VTK_FLUTTER_CALL *texture_target_create)(
-      const VtkFlutterFrameCallbacksV2 *callbacks,
+      const VtkFlutterFrameCallbacks *callbacks,
       VtkFlutterTextureTarget **out_target, VtkFlutterStatus *status);
   int32_t(VTK_FLUTTER_CALL *texture_target_destroy)(
       VtkFlutterTextureTarget *target, VtkFlutterStatus *status);
-} VtkFlutterCoreApiV2;
+} VtkFlutterPresentationApi;
 
 VTK_FLUTTER_EXPORT uint32_t VTK_FLUTTER_CALL vtk_flutter_abi_version(void);
 
-VTK_FLUTTER_EXPORT const VtkFlutterCoreApiV2 *VTK_FLUTTER_CALL
-vtk_flutter_get_core_api_v2(void);
+VTK_FLUTTER_EXPORT const VtkFlutterPresentationApi *VTK_FLUTTER_CALL
+vtk_flutter_get_presentation_api(void);
 
 VTK_FLUTTER_EXPORT void VTK_FLUTTER_CALL
 vtk_flutter_status_clear(VtkFlutterStatus *status);
 
-// Core-created sessions support volume upload and request validation. Rendering
-// additionally requires a platform adapter to attach an appropriate VTK render
-// window and presentation target.
 VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_session_create(
     VtkFlutterSession **out_session, VtkFlutterStatus *status);
 
 VTK_FLUTTER_EXPORT void VTK_FLUTTER_CALL
 vtk_flutter_session_destroy(VtkFlutterSession *session);
 
-VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_validate_volume(
-    const VtkFlutterVolume *volume, VtkFlutterStatus *status);
+VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_object_create(
+    VtkFlutterSession *session, const char *class_name,
+    VtkFlutterObjectHandle *out_object, VtkFlutterStatus *status);
 
-VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_session_set_volume(
-    VtkFlutterSession *session, const VtkFlutterVolume *volume,
+VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_object_destroy(
+    VtkFlutterSession *session, VtkFlutterObjectHandle object,
     VtkFlutterStatus *status);
 
-VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_validate_render_request(
-    const VtkFlutterRenderRequest *request, VtkFlutterStatus *status);
+// result_json is allocated by the core. Always release it with
+// vtk_flutter_string_free. Arguments must be a JSON array.
+VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_object_invoke(
+    VtkFlutterSession *session, VtkFlutterObjectHandle object,
+    const char *method_name, const char *arguments_json,
+    char **result_json, VtkFlutterStatus *status);
 
-// The platform adapter owns presentation. This call only orchestrates scene
-// configuration and target rendering; no platform image, Flutter, or graphics
-// types cross this interface.
+VTK_FLUTTER_EXPORT void VTK_FLUTTER_CALL
+vtk_flutter_string_free(char *value);
+
+VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_image_data_create(
+    VtkFlutterSession *session, const VtkFlutterImageData *image,
+    VtkFlutterObjectHandle *out_object, VtkFlutterStatus *status);
+
 VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_session_render(
-    VtkFlutterSession *session, const VtkFlutterRenderRequest *request,
-    VtkFlutterMetrics *metrics, VtkFlutterStatus *status);
+    VtkFlutterSession *session, VtkFlutterObjectHandle renderer,
+    const VtkFlutterViewport *viewport, VtkFlutterFrameMetrics *metrics,
+    VtkFlutterStatus *status);
 
 #ifdef __cplusplus
 }

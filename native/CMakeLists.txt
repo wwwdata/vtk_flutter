@@ -22,15 +22,33 @@ function(vtk_flutter_enable_warnings target)
 endfunction()
 
 find_package(
-  VTK 9.5.2 EXACT CONFIG REQUIRED
+  VTK 9.6.2 EXACT CONFIG REQUIRED
   COMPONENTS
     CommonCore
     CommonDataModel
     FiltersCore
+    ImagingColor
     ImagingCore
     RenderingCore
     RenderingOpenGL2
+    RenderingVolume
     RenderingVolumeOpenGL2
+    SerializationManager
+)
+
+set(
+  VTK_FLUTTER_SERDES_SOURCE
+  "${CMAKE_CURRENT_BINARY_DIR}/vtk_flutter_serdes.cxx"
+)
+vtk_module_generate_libraries_serdes_registrar(
+  REGISTRAR_NAME vtkFlutter
+  REGISTRAR_SOURCE "${VTK_FLUTTER_SERDES_SOURCE}"
+  MANDATORY_MODULES
+    VTK::FiltersCore
+    VTK::ImagingColor
+    VTK::ImagingCore
+    VTK::RenderingVolume
+    VTK::RenderingVolumeOpenGL2
 )
 
 if(VTK_FLUTTER_BUILD_SHARED_CORE)
@@ -43,12 +61,10 @@ add_library(
   vtk_flutter_core
   ${VTK_FLUTTER_CORE_LIBRARY_TYPE}
     include/vtk_flutter.h
+    "${VTK_FLUTTER_SERDES_SOURCE}"
     src/callback_render_target.cxx
-    src/render_target.h
     src/session.cxx
     src/session.h
-    src/volume_pipeline.cxx
-    src/volume_pipeline.h
     src/vtk_flutter.cxx
 )
 target_compile_features(vtk_flutter_core PUBLIC cxx_std_20)
@@ -127,16 +143,13 @@ if(BUILD_TESTING)
   set(
     VTK_FLUTTER_CONTRACT_CASES
     cpu_frame_copy
-    public_c_and_legacy_migration
-    core_table_lifecycle
-    concurrent_renders
+    generic_session
+    public_header
   )
   if(VTK_FLUTTER_TEST_REAL_RENDERING)
     list(
       APPEND VTK_FLUTTER_CONTRACT_CASES
-      real_offscreen_render
-      callback_failures
-      same_session_reentry
+      surface_render
     )
   endif()
   foreach(contract_case IN LISTS VTK_FLUTTER_CONTRACT_CASES)

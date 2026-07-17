@@ -81,7 +81,7 @@ void main() {
       commands,
       contains(
         '.: cmake -S native -B .dart_tool/native-test '
-        '-DVTK_DIR=/workspace/.dart_tool/vtk/9.5.2/macos-arm64/install/lib/cmake/vtk-9.5 '
+        '-DVTK_DIR=/workspace/.dart_tool/vtk/9.6.2/macos-arm64/install/lib/cmake/vtk-9.6 '
         '-DBUILD_TESTING=ON',
       ),
     );

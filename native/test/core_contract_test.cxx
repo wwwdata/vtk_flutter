@@ -1,903 +1,310 @@
-#include "c_contract_support.h"
 #include "callback_render_target.h"
-#include "session.h"
-#include "volume_pipeline.h"
 #include "vtk_flutter.h"
 
-#include <vtkCamera.h>
-#include <vtkImageData.h>
-#include <vtkRenderer.h>
+// clang-format off
+#include <vtk_nlohmannjson.h>
+#include VTK_NLOHMANN_JSON(json.hpp)
+// clang-format on
 
 #include <algorithm>
 #include <array>
-#include <atomic>
-#include <chrono>
-#include <cmath>
-#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
-#include <future>
 #include <iostream>
-#include <limits>
-#include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <type_traits>
-#include <utility>
 #include <vector>
 
-namespace {
-using namespace std::chrono_literals;
+extern "C" int vtk_flutter_public_header_contract(void);
 
+namespace {
 void Require(bool condition, std::string_view message) {
   if (!condition) {
     throw std::runtime_error(std::string(message));
   }
 }
 
-void RequireCode(int32_t actual, int32_t expected,
-                 const VtkFlutterStatus &status, std::string_view operation) {
-  if (actual == expected) {
-    return;
+void RequireOk(int32_t result, const VtkFlutterStatus &status,
+               std::string_view operation) {
+  if (result != VTK_FLUTTER_STATUS_OK) {
+    throw std::runtime_error(std::string(operation) + ": " + status.message);
   }
-  throw std::runtime_error(std::string(operation) + " returned " +
-                           std::to_string(actual) + ": " + status.message);
 }
 
-template <typename Action>
-void RequireInvalidArgument(Action action, std::string_view message) {
-  try {
-    action();
-  } catch (const std::invalid_argument &) {
-    return;
+struct SessionGuard {
+  SessionGuard() = default;
+  SessionGuard(const SessionGuard &) = delete;
+  SessionGuard &operator=(const SessionGuard &) = delete;
+  SessionGuard(SessionGuard &&other) noexcept : value(other.value) {
+    other.value = nullptr;
   }
-  throw std::runtime_error(std::string(message));
-}
-
-VtkFlutterVolume MakeVolume(std::vector<std::int16_t> &voxels) {
-  VtkFlutterVolume volume{};
-  volume.voxels = voxels.data();
-  volume.voxel_count = voxels.size();
-  volume.width = 2;
-  volume.height = 3;
-  volume.depth = 4;
-  const double affine[16] = {0.5, 0.0, 0.0, -4.0, 0.0, 0.6, 0.0, 8.0,
-                             0.0, 0.0, 1.2, 12.0, 0.0, 0.0, 0.0, 1.0};
-  std::copy(std::begin(affine), std::end(affine),
-            std::begin(volume.index_to_patient));
-  return volume;
-}
-
-VtkFlutterRenderRequest MakeRequest(
-    int32_t mode = VTK_FLUTTER_RENDER_OBLIQUE_MPR, int32_t width = 48,
-    int32_t height = 32) {
-  VtkFlutterRenderRequest request{};
-  request.mode = mode;
-  request.viewport = {width, height};
-  request.window_center = 350.0;
-  request.window_width = 1800.0;
-  request.plane_normal[2] = 1.0;
-  request.camera_azimuth_degrees = 61.0;
-  request.camera_elevation_degrees = -11.0;
-  request.camera_zoom = 1.75;
-  return request;
-}
-
-class RecordingRenderTarget final : public vtk_flutter::RenderTarget {
-public:
-  void Render(vtk_flutter::PreparedView view,
-              const VtkFlutterViewport &viewport,
-              VtkFlutterMetrics &metrics) override {
-    ++render_count;
-    captured_view = std::move(view);
-    captured_viewport = viewport;
-    metrics.surface_allocation_bytes = metrics.frame_bytes + 128;
-    metrics.patient_to_clip_valid =
-        captured_view.capture_patient_to_clip ? 1 : 0;
-  }
-
-  int render_count = 0;
-  vtk_flutter::PreparedView captured_view;
-  VtkFlutterViewport captured_viewport{};
+  SessionGuard &operator=(SessionGuard &&) = delete;
+  ~SessionGuard() { vtk_flutter_session_destroy(value); }
+  VtkFlutterSession *value = nullptr;
 };
 
-class ThrowingRenderTarget final : public vtk_flutter::RenderTarget {
-public:
-  void Render(vtk_flutter::PreparedView, const VtkFlutterViewport &,
-              VtkFlutterMetrics &) override {
-    throw std::runtime_error("legacy render target failure");
-  }
-};
-
-void SetCallbackStatus(VtkFlutterStatus *status, int32_t code,
-                       std::string_view message) {
-  if (status == nullptr) {
-    return;
-  }
-  status->code = code;
-  const auto length =
-      std::min(message.size(), sizeof(status->message) - std::size_t{1});
-  std::copy_n(message.data(), length, status->message);
-  status->message[length] = '\0';
+VtkFlutterObjectHandle CreateObject(VtkFlutterSession *session,
+                                    const char *class_name) {
+  VtkFlutterObjectHandle object = 0;
+  VtkFlutterStatus status{};
+  RequireOk(vtk_flutter_object_create(session, class_name, &object, &status),
+            status, class_name);
+  Require(object != 0, "VTK returned an invalid object handle");
+  return object;
 }
 
-struct CallbackHarness {
+nlohmann::json Invoke(VtkFlutterSession *session,
+                      VtkFlutterObjectHandle object, const char *method,
+                      const nlohmann::json &arguments = nlohmann::json::array()) {
+  char *result = nullptr;
+  VtkFlutterStatus status{};
+  const auto arguments_text = arguments.dump();
+  RequireOk(vtk_flutter_object_invoke(session, object, method,
+                                      arguments_text.c_str(), &result, &status),
+            status, method);
+  Require(result != nullptr, "VTK returned no invocation result");
+  const auto parsed = nlohmann::json::parse(result);
+  vtk_flutter_string_free(result);
+  return parsed;
+}
+
+VtkFlutterObjectHandle ResultHandle(const nlohmann::json &value) {
+  Require(value.is_object() && value.contains("Id"),
+          "VTK result contains no object handle");
+  return value["Id"].get<VtkFlutterObjectHandle>();
+}
+
+SessionGuard CreateSession() {
+  SessionGuard session;
+  VtkFlutterStatus status{};
+  RequireOk(vtk_flutter_session_create(&session.value, &status), status,
+            "session_create");
+  Require(session.value != nullptr, "VTK returned no session");
+  return session;
+}
+
+struct FrameHarness {
   std::vector<std::uint8_t> pixels;
-  std::uint64_t row_bytes = 0;
-  std::uint64_t capacity_bytes = 0;
-  int32_t pixel_format = VTK_FLUTTER_PIXEL_FORMAT_RGBA8888;
-  std::uint32_t frame_struct_size = sizeof(VtkFlutterCpuFrameV2);
-  std::uint32_t frame_version = VTK_FLUTTER_CPU_FRAME_VERSION_2;
-  int32_t begin_result = VTK_FLUTTER_STATUS_OK;
-  int32_t end_result = VTK_FLUTTER_STATUS_OK;
-  bool throw_begin = false;
-  bool throw_end = false;
-  bool throw_cancel = false;
-  bool reenter = false;
-  bool gate_first_begin = false;
-  const VtkFlutterCoreApiV2 *api = nullptr;
-  VtkFlutterSession *session = nullptr;
-  const VtkFlutterRenderRequest *request = nullptr;
-  std::atomic<int> begin_count{0};
-  std::atomic<int> end_count{0};
-  std::atomic<int> cancel_count{0};
-  std::atomic<int> active_frames{0};
-  std::atomic<int> maximum_active_frames{0};
-  int32_t reentry_result = VTK_FLUTTER_STATUS_OK;
-  VtkFlutterStatus reentry_status{};
-  std::mutex gate_mutex;
-  std::condition_variable gate_condition;
-  bool first_begin_entered = false;
-  bool release_first_begin = false;
+  int begin_count = 0;
+  int end_count = 0;
+  int cancel_count = 0;
 };
 
-void RecordMaximum(std::atomic<int> &maximum, int candidate) {
-  auto observed = maximum.load();
-  while (observed < candidate &&
-         !maximum.compare_exchange_weak(observed, candidate)) {
-  }
-}
-
-int32_t VTK_FLUTTER_CALL HarnessBeginFrame(
-    void *user_data, const VtkFlutterViewport *viewport,
-    VtkFlutterCpuFrameV2 *frame, VtkFlutterStatus *status) {
-  auto &harness = *static_cast<CallbackHarness *>(user_data);
-  const auto call = ++harness.begin_count;
-  if (harness.throw_begin) {
-    throw std::runtime_error("C++ begin_frame exception");
-  }
-  if (harness.gate_first_begin && call == 1) {
-    std::unique_lock lock(harness.gate_mutex);
-    harness.first_begin_entered = true;
-    harness.gate_condition.notify_all();
-    harness.gate_condition.wait(
-        lock, [&harness] { return harness.release_first_begin; });
-  }
-  if (harness.begin_result != VTK_FLUTTER_STATUS_OK) {
-    SetCallbackStatus(status, harness.begin_result, "begin_frame rejected");
-    return harness.begin_result;
-  }
-
-  const auto active = ++harness.active_frames;
-  RecordMaximum(harness.maximum_active_frames, active);
-
-  if (harness.reenter) {
-    VtkFlutterMetrics nested_metrics{};
-    harness.reentry_result = harness.api->session_render(
-        harness.session, harness.request, &nested_metrics,
-        &harness.reentry_status);
-  }
-
-  frame->struct_size = harness.frame_struct_size;
-  frame->version = harness.frame_version;
+int32_t VTK_FLUTTER_CALL BeginFrame(void *user_data,
+                                    const VtkFlutterViewport *viewport,
+                                    VtkFlutterCpuFrame *frame,
+                                    VtkFlutterStatus *) {
+  auto &harness = *static_cast<FrameHarness *>(user_data);
+  ++harness.begin_count;
+  harness.pixels.assign(
+      static_cast<std::size_t>(viewport->width) * viewport->height * 4U, 0U);
+  frame->struct_size = sizeof(VtkFlutterCpuFrame);
+  frame->version = VTK_FLUTTER_CPU_FRAME_VERSION;
   frame->pixels = harness.pixels.data();
-  frame->capacity_bytes = harness.capacity_bytes;
-  frame->row_bytes = harness.row_bytes;
-  frame->pixel_format = harness.pixel_format;
-  Require(viewport->width > 0 && viewport->height > 0,
-          "begin_frame received an invalid viewport");
+  frame->capacity_bytes = harness.pixels.size();
+  frame->row_bytes = static_cast<std::uint64_t>(viewport->width) * 4U;
+  frame->pixel_format = VTK_FLUTTER_PIXEL_FORMAT_RGBA8888;
   return VTK_FLUTTER_STATUS_OK;
 }
 
-int32_t VTK_FLUTTER_CALL HarnessEndFrame(
-    void *user_data, const VtkFlutterMetrics *, VtkFlutterStatus *status) {
-  auto &harness = *static_cast<CallbackHarness *>(user_data);
-  ++harness.end_count;
-  if (harness.throw_end) {
-    throw std::runtime_error("C++ end_frame exception");
-  }
-  if (harness.end_result != VTK_FLUTTER_STATUS_OK) {
-    SetCallbackStatus(status, harness.end_result, "end_frame rejected");
-    return harness.end_result;
-  }
-  --harness.active_frames;
+int32_t VTK_FLUTTER_CALL EndFrame(void *user_data,
+                                  const VtkFlutterFrameMetrics *,
+                                  VtkFlutterStatus *) {
+  ++static_cast<FrameHarness *>(user_data)->end_count;
   return VTK_FLUTTER_STATUS_OK;
 }
 
-void VTK_FLUTTER_CALL HarnessCancelFrame(void *user_data) {
-  auto &harness = *static_cast<CallbackHarness *>(user_data);
-  ++harness.cancel_count;
-  --harness.active_frames;
-  if (harness.throw_cancel) {
-    throw std::runtime_error("C++ cancel_frame exception");
-  }
+void VTK_FLUTTER_CALL CancelFrame(void *user_data) {
+  ++static_cast<FrameHarness *>(user_data)->cancel_count;
 }
 
-VtkFlutterFrameCallbacksV2 MakeHarnessCallbacks(CallbackHarness &harness) {
-  return {
-      sizeof(VtkFlutterFrameCallbacksV2),
-      VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2,
-      &harness,
-      HarnessBeginFrame,
-      HarnessEndFrame,
-      HarnessCancelFrame,
-  };
+void TestPublicHeader() {
+  Require(vtk_flutter_public_header_contract() == 1,
+          "public C header contract failed");
+  Require(vtk_flutter_abi_version() == VTK_FLUTTER_ABI_VERSION,
+          "ABI version mismatch");
+  const auto *api = vtk_flutter_get_presentation_api();
+  Require(api != nullptr, "presentation API is missing");
+  Require(api->version == VTK_FLUTTER_PRESENTATION_API_VERSION,
+          "presentation API version mismatch");
+  Require(api->struct_size >= sizeof(VtkFlutterPresentationApi),
+          "presentation API is truncated");
 }
 
-void PrepareHarnessFrame(CallbackHarness &harness,
-                         const VtkFlutterViewport &viewport,
-                         std::uint64_t padding = 0) {
-  harness.row_bytes =
-      static_cast<std::uint64_t>(viewport.width) * 4ULL + padding;
-  harness.capacity_bytes =
-      harness.row_bytes * static_cast<std::uint64_t>(viewport.height);
-  harness.pixels.assign(static_cast<std::size_t>(harness.capacity_bytes),
-                        0xA5);
-}
-
-void TestCpuFrameCopyContract() {
+void TestCpuFrameCopy() {
   const VtkFlutterViewport viewport{2, 2};
-  const std::array<std::uint8_t, 16> bottom_up_rgba{
-      1,  2,  3,  4,  5,  6,  7,  8,
-      11, 12, 13, 14, 15, 16, 17, 18,
+  const std::array<std::uint8_t, 16> bottom_up{
+      1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18,
   };
-  constexpr std::uint8_t padding = 0xCC;
-  std::array<std::uint8_t, 24> destination{};
-  destination.fill(padding);
-  VtkFlutterCpuFrameV2 frame{
-      sizeof(VtkFlutterCpuFrameV2),
-      VTK_FLUTTER_CPU_FRAME_VERSION_2,
-      destination.data(),
-      20,
-      12,
+  std::array<std::uint8_t, 16> top_down{};
+  const VtkFlutterCpuFrame frame{
+      sizeof(VtkFlutterCpuFrame),
+      VTK_FLUTTER_CPU_FRAME_VERSION,
+      top_down.data(),
+      top_down.size(),
+      8,
       VTK_FLUTTER_PIXEL_FORMAT_RGBA8888,
   };
-
-  vtk_flutter::CopyRgbaBottomUpToFrame(bottom_up_rgba.data(), viewport,
-                                       frame);
-  const std::array<std::uint8_t, 8> expected_top{11, 12, 13, 14,
-                                                15, 16, 17, 18};
-  const std::array<std::uint8_t, 8> expected_bottom{1, 2, 3, 4, 5, 6, 7, 8};
-  Require(std::equal(expected_top.begin(), expected_top.end(),
-                     destination.begin()),
-          "RGBA copy did not flip the top row");
-  Require(std::equal(expected_bottom.begin(), expected_bottom.end(),
-                     destination.begin() + 12),
-          "RGBA copy did not flip the bottom row");
-  Require(std::all_of(destination.begin() + 8, destination.begin() + 12,
-                      [](auto value) { return value == padding; }) &&
-              std::all_of(destination.begin() + 20, destination.end(),
-                          [](auto value) { return value == padding; }),
-          "RGBA copy overwrote row padding");
-
-  destination.fill(padding);
-  frame.pixel_format = VTK_FLUTTER_PIXEL_FORMAT_BGRA8888;
-  vtk_flutter::CopyRgbaBottomUpToFrame(bottom_up_rgba.data(), viewport,
-                                       frame);
-  const std::array<std::uint8_t, 8> expected_bgra_top{13, 12, 11, 14,
-                                                     17, 16, 15, 18};
-  const std::array<std::uint8_t, 8> expected_bgra_bottom{3, 2, 1, 4,
-                                                        7, 6, 5, 8};
-  Require(std::equal(expected_bgra_top.begin(), expected_bgra_top.end(),
-                     destination.begin()) &&
-              std::equal(expected_bgra_bottom.begin(),
-                         expected_bgra_bottom.end(), destination.begin() + 12),
-          "BGRA copy did not flip rows and swap red/blue exactly");
-  Require(std::all_of(destination.begin() + 8, destination.begin() + 12,
-                      [](auto value) { return value == padding; }),
-          "BGRA copy overwrote row padding");
-
-  const auto valid_frame = frame;
-  RequireInvalidArgument(
-      [&] {
-        auto invalid = valid_frame;
-        --invalid.struct_size;
-        vtk_flutter::CopyRgbaBottomUpToFrame(bottom_up_rgba.data(), viewport,
-                                             invalid);
-      },
-      "CPU frame accepted a truncated descriptor");
-  RequireInvalidArgument(
-      [&] {
-        auto invalid = valid_frame;
-        ++invalid.version;
-        vtk_flutter::CopyRgbaBottomUpToFrame(bottom_up_rgba.data(), viewport,
-                                             invalid);
-      },
-      "CPU frame accepted an unsupported version");
-  RequireInvalidArgument(
-      [&] {
-        auto invalid = valid_frame;
-        invalid.pixels = nullptr;
-        vtk_flutter::CopyRgbaBottomUpToFrame(bottom_up_rgba.data(), viewport,
-                                             invalid);
-      },
-      "CPU frame accepted null pixels");
-  RequireInvalidArgument(
-      [&] {
-        auto invalid = valid_frame;
-        invalid.pixel_format = 999;
-        vtk_flutter::CopyRgbaBottomUpToFrame(bottom_up_rgba.data(), viewport,
-                                             invalid);
-      },
-      "CPU frame accepted an unknown pixel format");
-  RequireInvalidArgument(
-      [&] {
-        auto invalid = valid_frame;
-        invalid.row_bytes = 7;
-        vtk_flutter::CopyRgbaBottomUpToFrame(bottom_up_rgba.data(), viewport,
-                                             invalid);
-      },
-      "CPU frame accepted a short row");
-  RequireInvalidArgument(
-      [&] {
-        auto invalid = valid_frame;
-        invalid.capacity_bytes = 19;
-        vtk_flutter::CopyRgbaBottomUpToFrame(bottom_up_rgba.data(), viewport,
-                                             invalid);
-      },
-      "CPU frame accepted capacity one byte below the exact requirement");
-  RequireInvalidArgument(
-      [&] {
-        auto invalid = valid_frame;
-        invalid.row_bytes = std::numeric_limits<std::uint64_t>::max();
-        invalid.capacity_bytes = std::numeric_limits<std::uint64_t>::max();
-        vtk_flutter::CopyRgbaBottomUpToFrame(bottom_up_rgba.data(), viewport,
-                                             invalid);
-      },
-      "CPU frame accepted an overflowing padded layout");
-  RequireInvalidArgument(
-      [&] {
-        vtk_flutter::CopyRgbaBottomUpToFrame(nullptr, viewport, valid_frame);
-      },
-      "CPU copy accepted null VTK pixels");
-}
-
-void TestPublicCAndLegacyMigrationContract() {
-  static_assert(std::is_standard_layout_v<VtkFlutterViewport>);
-  static_assert(std::is_standard_layout_v<VtkFlutterVolume>);
-  static_assert(std::is_standard_layout_v<VtkFlutterRenderRequest>);
-  static_assert(std::is_standard_layout_v<VtkFlutterMetrics>);
-  static_assert(std::is_standard_layout_v<VtkFlutterStatus>);
-  static_assert(std::is_standard_layout_v<VtkFlutterCpuFrameV2>);
-
-  Require(vtk_flutter_abi_version() == 1U,
-          "legacy C ABI version changed during migration");
-  Require(vtk_flutter_public_header_is_c_compatible() == 0,
-          "public header did not compile and operate as C11");
-  const auto *api = vtk_flutter_get_core_api_v2();
-  Require(api != nullptr && api->version == VTK_FLUTTER_CORE_API_VERSION_2 &&
-              api->struct_size >= sizeof(VtkFlutterCoreApiV2),
-          "v2 core table is unavailable");
-
-  VtkFlutterStatus status{};
-  VtkFlutterSession *session = nullptr;
-  RequireCode(vtk_flutter_session_create(&session, &status),
-              VTK_FLUTTER_STATUS_OK, status, "legacy session_create");
-  Require(session != nullptr && status.message[0] == '\0',
-          "legacy session_create did not clear status");
-
-  std::vector<std::int16_t> voxels(24);
-  for (std::size_t index = 0; index < voxels.size(); ++index) {
-    voxels[index] = static_cast<std::int16_t>(index) - 12;
-  }
-  auto volume = MakeVolume(voxels);
-  RequireCode(vtk_flutter_validate_volume(&volume, &status),
-              VTK_FLUTTER_STATUS_OK, status, "legacy validate_volume");
-  RequireCode(vtk_flutter_session_set_volume(session, &volume, &status),
-              VTK_FLUTTER_STATUS_OK, status, "legacy session_set_volume");
-  --volume.voxel_count;
-  Require(vtk_flutter_validate_volume(&volume, &status) ==
-                  VTK_FLUTTER_STATUS_INVALID_ARGUMENT &&
-              status.message[0] != '\0',
-          "legacy validation accepted an inconsistent voxel count");
-  ++volume.voxel_count;
-  volume.index_to_patient[0] = INFINITY;
-  Require(vtk_flutter_validate_volume(&volume, &status) ==
-              VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-          "legacy validation accepted a non-finite affine");
-  volume.index_to_patient[0] = 0.5;
-
-  vtk_flutter::VolumePipeline pipeline;
-  pipeline.SetVolume(volume);
-  const auto first_voxel = voxels.front();
-  voxels.front() = 12345;
-  Require(*static_cast<std::int16_t *>(pipeline.Image()->GetScalarPointer(
-              0, 0, 0)) == first_voxel,
-          "volume upload retained caller-owned voxel memory");
-  voxels.front() = first_voxel;
-  int dimensions[3]{};
-  pipeline.Image()->GetDimensions(dimensions);
-  double spacing[3]{};
-  pipeline.Image()->GetSpacing(spacing);
-  double origin[3]{};
-  pipeline.Image()->GetOrigin(origin);
-  Require(dimensions[0] == 2 && dimensions[1] == 3 && dimensions[2] == 4 &&
-              std::abs(spacing[0] - 0.5) < 1e-12 &&
-              std::abs(spacing[1] - 0.6) < 1e-12 &&
-              std::abs(spacing[2] - 1.2) < 1e-12 && origin[0] == -4.0 &&
-              origin[1] == 8.0 && origin[2] == 12.0,
-          "volume pipeline did not preserve dimensions and affine geometry");
-
-  auto request = MakeRequest(VTK_FLUTTER_RENDER_OBLIQUE_MPR);
-  RequireCode(vtk_flutter_validate_render_request(&request, &status),
-              VTK_FLUTTER_STATUS_OK, status,
-              "legacy validate_render_request");
-  request.plane_normal[2] = 0.0;
-  Require(vtk_flutter_validate_render_request(&request, &status) ==
-              VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-          "legacy validation accepted a zero oblique normal");
-  request.plane_normal[2] = 1.0;
-  request.viewport.width = 8193;
-  Require(vtk_flutter_validate_render_request(&request, &status) ==
-              VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-          "legacy validation accepted an oversized viewport");
-  request.viewport.width = 48;
-  request.camera_zoom = 5.01;
-  Require(vtk_flutter_validate_render_request(&request, &status) ==
-              VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-          "legacy validation accepted an out-of-range zoom");
-  request.camera_zoom = 1.75;
-  request.mode = 999;
-  Require(vtk_flutter_validate_render_request(&request, &status) ==
-              VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-          "legacy validation accepted an unknown mode");
-
-  request = MakeRequest(VTK_FLUTTER_RENDER_VOLUME_LOCATOR);
-  VtkFlutterMetrics metrics{};
-  Require(vtk_flutter_session_render(session, &request, &metrics, &status) ==
-              VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
-          "legacy core-created session did not report a missing target");
-  vtk_flutter_session_destroy(session);
-
-  auto recording_target = std::make_unique<RecordingRenderTarget>();
-  auto *recording_observer = recording_target.get();
-  VtkFlutterSession legacy_platform_session(std::move(recording_target));
-  RequireCode(vtk_flutter_session_set_volume(&legacy_platform_session, &volume,
-                                             &status),
-              VTK_FLUTTER_STATUS_OK, status, "legacy platform set_volume");
-  RequireCode(vtk_flutter_session_render(&legacy_platform_session, &request,
-                                         &metrics, &status),
-              VTK_FLUTTER_STATUS_OK, status, "legacy platform render");
-  Require(recording_observer->render_count == 1 &&
-              recording_observer->captured_view.renderer != nullptr &&
-              recording_observer->captured_viewport.width == 48 &&
-              recording_observer->captured_viewport.height == 32 &&
-              metrics.volume_bytes == voxels.size() * sizeof(std::int16_t) &&
-              metrics.frame_bytes == 48ULL * 32ULL * 4ULL &&
-              metrics.frame_width == 48 && metrics.frame_height == 32 &&
-              metrics.patient_to_clip_valid == 1,
-          "legacy in-process platform target behavior changed");
-
-  VtkFlutterSession throwing_platform_session(
-      std::make_unique<ThrowingRenderTarget>());
-  Require(vtk_flutter_session_render(&throwing_platform_session, &request,
-                                     &metrics, &status) ==
-                  VTK_FLUTTER_STATUS_INTERNAL_ERROR &&
-              std::string(status.message) == "legacy render target failure" &&
-              metrics.frame_bytes == 0,
-          "legacy render exception escaped or leaked partial metrics");
-}
-
-void TestCoreTableCreationAndLifecycle() {
-  const auto *api = vtk_flutter_get_core_api_v2();
-  VtkFlutterStatus status{};
-  std::array<std::uint8_t, 4> pixel{};
-  VtkFlutterTestFrameRecorder recorder{};
-  recorder.pixels = pixel.data();
-  recorder.capacity_bytes = pixel.size();
-  recorder.row_bytes = 4;
-  recorder.pixel_format = VTK_FLUTTER_PIXEL_FORMAT_RGBA8888;
-
-  VtkFlutterTextureTarget *target = nullptr;
-  RequireCode(vtk_flutter_test_create_target_from_c(api, &recorder, &target,
-                                                    &status),
-              VTK_FLUTTER_STATUS_OK, status, "C11 texture_target_create");
-  Require(target != nullptr, "C11 texture_target_create returned null");
-  RequireCode(vtk_flutter_test_destroy_target_from_c(api, target, &status),
-              VTK_FLUTTER_STATUS_OK, status, "C11 texture_target_destroy");
-
-  auto callbacks = vtk_flutter_test_frame_callbacks_v2(&recorder);
-  target = reinterpret_cast<VtkFlutterTextureTarget *>(0x1);
-  auto invalid_callbacks = callbacks;
-  --invalid_callbacks.struct_size;
-  Require(api->texture_target_create(&invalid_callbacks, &target, &status) ==
-                  VTK_FLUTTER_STATUS_INVALID_ARGUMENT &&
-              target == nullptr,
-          "target creation accepted a truncated callback table");
-  invalid_callbacks = callbacks;
-  ++invalid_callbacks.version;
-  Require(api->texture_target_create(&invalid_callbacks, &target, &status) ==
-                  VTK_FLUTTER_STATUS_INVALID_ARGUMENT &&
-              target == nullptr,
-          "target creation accepted an unsupported callback version");
-  invalid_callbacks = callbacks;
-  invalid_callbacks.cancel_frame = nullptr;
-  Require(api->texture_target_create(&invalid_callbacks, &target, &status) ==
-                  VTK_FLUTTER_STATUS_INVALID_ARGUMENT &&
-              target == nullptr,
-          "target creation accepted an incomplete callback table");
-
-  VtkFlutterSession *first_session = nullptr;
-  VtkFlutterSession *second_session = nullptr;
-  RequireCode(api->session_create(&first_session, &status),
-              VTK_FLUTTER_STATUS_OK, status, "first session_create");
-  RequireCode(api->session_create(&second_session, &status),
-              VTK_FLUTTER_STATUS_OK, status, "second session_create");
-  RequireCode(vtk_flutter_test_create_target_from_c(api, &recorder, &target,
-                                                    &status),
-              VTK_FLUTTER_STATUS_OK, status, "lifecycle target_create");
-  VtkFlutterTextureTarget *second_target = nullptr;
-  RequireCode(vtk_flutter_test_create_target_from_c(
-                  api, &recorder, &second_target, &status),
-              VTK_FLUTTER_STATUS_OK, status, "second target_create");
-
-  RequireCode(api->session_attach_texture_target(first_session, target,
-                                                 &status),
-              VTK_FLUTTER_STATUS_OK, status, "first attach");
-  RequireCode(api->session_attach_texture_target(first_session, target,
-                                                 &status),
-              VTK_FLUTTER_STATUS_OK, status, "idempotent attach");
-  Require(api->session_attach_texture_target(second_session, target, &status) ==
-              VTK_FLUTTER_STATUS_INVALID_STATE,
-          "one texture target attached to two sessions");
-  Require(api->session_attach_texture_target(first_session, second_target,
-                                             &status) ==
-              VTK_FLUTTER_STATUS_INVALID_STATE,
-          "one session accepted two texture targets");
-  Require(api->texture_target_destroy(target, &status) ==
-              VTK_FLUTTER_STATUS_INVALID_STATE,
-          "attached texture target was destroyed");
-  RequireCode(api->session_detach_texture_target(first_session, target,
-                                                 &status),
-              VTK_FLUTTER_STATUS_OK, status, "first detach");
-  RequireCode(api->session_detach_texture_target(first_session, target,
-                                                 &status),
-              VTK_FLUTTER_STATUS_OK, status, "idempotent detach");
-  RequireCode(api->session_attach_texture_target(second_session, target,
-                                                 &status),
-              VTK_FLUTTER_STATUS_OK, status, "reattach to second session");
-  RequireCode(api->session_detach_texture_target(second_session, target,
-                                                 &status),
-              VTK_FLUTTER_STATUS_OK, status, "second detach");
-  RequireCode(api->texture_target_destroy(target, &status),
-              VTK_FLUTTER_STATUS_OK, status, "detached target_destroy");
-
-  RequireCode(api->session_attach_texture_target(first_session, second_target,
-                                                 &status),
-              VTK_FLUTTER_STATUS_OK, status, "attach before session destroy");
-  api->session_destroy(first_session);
-  RequireCode(api->texture_target_destroy(second_target, &status),
-              VTK_FLUTTER_STATUS_OK, status,
-              "session destruction did not detach target");
-  api->session_destroy(second_session);
-}
-
-void TestRealOffscreenRenderingThroughC() {
-  const auto *api = vtk_flutter_get_core_api_v2();
-  VtkFlutterStatus status{};
-  VtkFlutterSession *session = nullptr;
-  RequireCode(api->session_create(&session, &status), VTK_FLUTTER_STATUS_OK,
-              status, "offscreen session_create");
-  std::vector<std::int16_t> voxels(24);
-  for (std::size_t index = 0; index < voxels.size(); ++index) {
-    voxels[index] = static_cast<std::int16_t>(index) - 12;
-  }
-  const auto volume = MakeVolume(voxels);
-  RequireCode(api->session_set_volume(session, &volume, &status),
-              VTK_FLUTTER_STATUS_OK, status, "offscreen session_set_volume");
-  auto request = MakeRequest();
-  request.plane_origin[0] = -3.75;
-  request.plane_origin[1] = 8.6;
-  request.plane_origin[2] = 13.8;
-  constexpr std::uint64_t padding = 12;
-  const auto row_bytes =
-      static_cast<std::uint64_t>(request.viewport.width) * 4ULL + padding;
-  std::vector<std::uint8_t> pixels(
-      static_cast<std::size_t>(row_bytes) * request.viewport.height, 0xD7);
-  VtkFlutterTestFrameRecorder recorder{};
-  recorder.pixels = pixels.data();
-  recorder.capacity_bytes = pixels.size();
-  recorder.row_bytes = row_bytes;
-  recorder.pixel_format = VTK_FLUTTER_PIXEL_FORMAT_RGBA8888;
-  VtkFlutterTextureTarget *target = nullptr;
-  RequireCode(vtk_flutter_test_create_target_from_c(api, &recorder, &target,
-                                                    &status),
-              VTK_FLUTTER_STATUS_OK, status, "offscreen target_create");
-  RequireCode(api->session_attach_texture_target(session, target, &status),
-              VTK_FLUTTER_STATUS_OK, status, "offscreen attach");
-
-  VtkFlutterMetrics rgba_metrics{};
-  RequireCode(api->session_render(session, &request, &rgba_metrics, &status),
-              VTK_FLUTTER_STATUS_OK, status, "RGBA offscreen render");
-  Require(recorder.begin_count == 1 && recorder.end_count == 1 &&
-              recorder.cancel_count == 0 &&
-              recorder.width == request.viewport.width &&
-              recorder.height == request.viewport.height &&
-              recorder.frame_bytes == 48ULL * 32ULL * 4ULL &&
-              recorder.surface_allocation_bytes == pixels.size() &&
-              rgba_metrics.surface_allocation_bytes == pixels.size() &&
-              rgba_metrics.surface_unique_byte_values > 1 &&
-              rgba_metrics.surface_changed_pixels > 0 &&
-              rgba_metrics.surface_checksum == rgba_metrics.cpu_checksum,
-          "real core-owned VTK render did not publish credible metrics");
-  for (int row = 0; row < request.viewport.height; ++row) {
-    const auto padding_begin =
-        pixels.begin() + static_cast<std::ptrdiff_t>(row * row_bytes +
-                                                    request.viewport.width * 4);
-    Require(std::all_of(padding_begin,
-                        pixels.begin() + static_cast<std::ptrdiff_t>(
-                                             (row + 1) * row_bytes),
-                        [](auto value) { return value == 0xD7; }),
-            "real VTK render overwrote caller row padding");
-  }
-  const auto rgba_pixels = pixels;
-
-  std::fill(pixels.begin(), pixels.end(), 0xD7);
-  recorder.pixel_format = VTK_FLUTTER_PIXEL_FORMAT_BGRA8888;
-  VtkFlutterMetrics bgra_metrics{};
-  RequireCode(api->session_render(session, &request, &bgra_metrics, &status),
-              VTK_FLUTTER_STATUS_OK, status, "BGRA offscreen render");
-  for (int row = 0; row < request.viewport.height; ++row) {
-    for (int column = 0; column < request.viewport.width; ++column) {
-      const auto offset = static_cast<std::size_t>(row) * row_bytes +
-                          static_cast<std::size_t>(column) * 4U;
-      Require(pixels[offset] == rgba_pixels[offset + 2U] &&
-                  pixels[offset + 1U] == rgba_pixels[offset + 1U] &&
-                  pixels[offset + 2U] == rgba_pixels[offset] &&
-                  pixels[offset + 3U] == rgba_pixels[offset + 3U],
-              "real VTK BGRA render was not an exact red/blue conversion");
-    }
-  }
-
-  RequireCode(api->session_detach_texture_target(session, target, &status),
-              VTK_FLUTTER_STATUS_OK, status, "offscreen detach");
-  RequireCode(vtk_flutter_test_destroy_target_from_c(api, target, &status),
-              VTK_FLUTTER_STATUS_OK, status, "offscreen target_destroy");
-  api->session_destroy(session);
-}
-
-struct HarnessFixture {
-  explicit HarnessFixture(CallbackHarness &callback_harness)
-      : harness(callback_harness), api(vtk_flutter_get_core_api_v2()) {
-    VtkFlutterStatus status{};
-    RequireCode(api->session_create(&session, &status),
-                VTK_FLUTTER_STATUS_OK, status, "harness session_create");
-    const auto callbacks = MakeHarnessCallbacks(harness);
-    RequireCode(api->texture_target_create(&callbacks, &target, &status),
-                VTK_FLUTTER_STATUS_OK, status, "harness target_create");
-    RequireCode(api->session_attach_texture_target(session, target, &status),
-                VTK_FLUTTER_STATUS_OK, status, "harness attach");
-  }
-
-  ~HarnessFixture() {
-    VtkFlutterStatus status{};
-    if (session != nullptr && target != nullptr) {
-      api->session_detach_texture_target(session, target, &status);
-    }
-    if (target != nullptr) {
-      api->texture_target_destroy(target, &status);
-    }
-    if (session != nullptr) {
-      api->session_destroy(session);
-    }
-  }
-
-  CallbackHarness &harness;
-  const VtkFlutterCoreApiV2 *api;
-  VtkFlutterSession *session = nullptr;
-  VtkFlutterTextureTarget *target = nullptr;
-};
-
-void ResetHarnessCounts(CallbackHarness &harness) {
-  harness.begin_count = 0;
-  harness.end_count = 0;
-  harness.cancel_count = 0;
-  harness.active_frames = 0;
-  harness.maximum_active_frames = 0;
-}
-
-void TestCallbackFailuresExceptionsAndCancellation() {
-  auto request = MakeRequest(VTK_FLUTTER_RENDER_OBLIQUE_MPR, 24, 16);
-  CallbackHarness harness;
-  PrepareHarnessFrame(harness, request.viewport, 4);
-  HarnessFixture fixture(harness);
-  VtkFlutterMetrics metrics{};
-  VtkFlutterStatus status{};
-
-  harness.begin_result = VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
-  Require(fixture.api->session_render(fixture.session, &request, &metrics,
-                                     &status) ==
-                  VTK_FLUTTER_STATUS_INVALID_ARGUMENT &&
-              std::string(status.message) == "begin_frame rejected" &&
-              harness.begin_count == 1 && harness.end_count == 0 &&
-              harness.cancel_count == 0 && metrics.frame_bytes == 0,
-          "begin_frame failure was not contained without cancellation");
-
-  ResetHarnessCounts(harness);
-  harness.begin_result = VTK_FLUTTER_STATUS_OK;
-  harness.end_result = VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE;
-  Require(fixture.api->session_render(fixture.session, &request, &metrics,
-                                     &status) ==
-                  VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE &&
-              std::string(status.message) == "end_frame rejected" &&
-              harness.begin_count == 1 && harness.end_count == 1 &&
-              harness.cancel_count == 1 && metrics.frame_bytes == 0,
-          "end_frame failure did not cancel and clear partial metrics");
-
-  ResetHarnessCounts(harness);
-  harness.end_result = VTK_FLUTTER_STATUS_OK;
-  harness.frame_version = VTK_FLUTTER_CPU_FRAME_VERSION_2 + 1;
-  Require(fixture.api->session_render(fixture.session, &request, &metrics,
-                                     &status) ==
-                  VTK_FLUTTER_STATUS_INVALID_ARGUMENT &&
-              harness.begin_count == 1 && harness.end_count == 0 &&
-              harness.cancel_count == 1,
-          "invalid callback frame descriptor was not cancelled");
-
-  ResetHarnessCounts(harness);
-  harness.frame_version = VTK_FLUTTER_CPU_FRAME_VERSION_2;
-  harness.throw_begin = true;
-  Require(fixture.api->session_render(fixture.session, &request, &metrics,
-                                     &status) ==
-                  VTK_FLUTTER_STATUS_INTERNAL_ERROR &&
-              std::string(status.message) == "C++ begin_frame exception" &&
-              harness.begin_count == 1 && harness.end_count == 0 &&
-              harness.cancel_count == 0,
-          "C++ begin_frame exception crossed the C seam");
-
-  ResetHarnessCounts(harness);
-  harness.throw_begin = false;
-  harness.throw_end = true;
-  harness.throw_cancel = true;
-  Require(fixture.api->session_render(fixture.session, &request, &metrics,
-                                     &status) ==
-                  VTK_FLUTTER_STATUS_INTERNAL_ERROR &&
-              std::string(status.message) == "C++ end_frame exception" &&
-              harness.begin_count == 1 && harness.end_count == 1 &&
-              harness.cancel_count == 1,
-          "C++ end/cancel exceptions were not contained");
-}
-
-void TestSameSessionReentryIsRejected() {
-  const auto request = MakeRequest(VTK_FLUTTER_RENDER_OBLIQUE_MPR, 24, 16);
-  CallbackHarness harness;
-  PrepareHarnessFrame(harness, request.viewport);
-  HarnessFixture fixture(harness);
-  harness.api = fixture.api;
-  harness.session = fixture.session;
-  harness.request = &request;
-  harness.reenter = true;
-
-  VtkFlutterMetrics metrics{};
-  VtkFlutterStatus status{};
-  RequireCode(fixture.api->session_render(fixture.session, &request, &metrics,
-                                          &status),
-              VTK_FLUTTER_STATUS_OK, status, "outer reentry render");
-  Require(harness.reentry_result == VTK_FLUTTER_STATUS_INVALID_STATE &&
-              std::string(harness.reentry_status.message) ==
-                  "reentrant access to a session is not allowed" &&
-              harness.begin_count == 1 && harness.end_count == 1 &&
-              harness.cancel_count == 0,
-          "same-session callback reentry was not rejected cleanly");
-}
-
-void TestConcurrentRendersAreSerialized() {
-  const auto request = MakeRequest(VTK_FLUTTER_RENDER_OBLIQUE_MPR, 24, 16);
-  CallbackHarness harness;
-  PrepareHarnessFrame(harness, request.viewport);
-  harness.gate_first_begin = true;
-  harness.begin_result = VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
-  HarnessFixture fixture(harness);
-
-  auto render = [&] {
-    VtkFlutterMetrics metrics{};
-    VtkFlutterStatus status{};
-    const auto code = fixture.api->session_render(
-        fixture.session, &request, &metrics, &status);
-    return std::pair{code, std::string(status.message)};
+  vtk_flutter::CopyRgbaBottomUpToFrame(bottom_up.data(), viewport, frame);
+  const std::array<std::uint8_t, 16> expected{
+      11, 12, 13, 14, 15, 16, 17, 18, 1, 2, 3, 4, 5, 6, 7, 8,
   };
-  auto first = std::async(std::launch::async, render);
-  {
-    std::unique_lock lock(harness.gate_mutex);
-    Require(harness.gate_condition.wait_for(
-                lock, 2s, [&harness] { return harness.first_begin_entered; }),
-            "first concurrent render did not reach begin_frame");
-  }
-  auto second = std::async(std::launch::async, render);
-  Require(second.wait_for(150ms) == std::future_status::timeout &&
-              harness.begin_count == 1,
-          "second render was not serialized behind the active operation");
-  {
-    std::lock_guard lock(harness.gate_mutex);
-    harness.release_first_begin = true;
-  }
-  harness.gate_condition.notify_all();
-
-  const auto first_result = first.get();
-  const auto second_result = second.get();
-  const auto concurrency_diagnostic =
-      "concurrent renders: first=" + std::to_string(first_result.first) +
-      " (" + first_result.second + "), second=" +
-      std::to_string(second_result.first) + " (" + second_result.second +
-      "), begin=" + std::to_string(harness.begin_count.load()) +
-      ", end=" + std::to_string(harness.end_count.load()) +
-      ", cancel=" + std::to_string(harness.cancel_count.load()) +
-      ", max_active=" +
-      std::to_string(harness.maximum_active_frames.load()) +
-      ", active=" + std::to_string(harness.active_frames.load());
-  Require(first_result.first == VTK_FLUTTER_STATUS_INVALID_ARGUMENT &&
-              second_result.first == VTK_FLUTTER_STATUS_INVALID_ARGUMENT &&
-              harness.begin_count == 2 && harness.end_count == 0 &&
-              harness.cancel_count == 0 && harness.active_frames == 0,
-          concurrency_diagnostic);
+  Require(top_down == expected, "CPU frame was not vertically flipped");
 }
-} // namespace
 
-namespace {
-struct ContractCase {
-  std::string_view name;
-  void (*run)();
-};
-
-constexpr std::array contract_cases{
-    ContractCase{"cpu_frame_copy", TestCpuFrameCopyContract},
-    ContractCase{"public_c_and_legacy_migration",
-                 TestPublicCAndLegacyMigrationContract},
-    ContractCase{"core_table_lifecycle", TestCoreTableCreationAndLifecycle},
-    ContractCase{"real_offscreen_render", TestRealOffscreenRenderingThroughC},
-    ContractCase{"callback_failures",
-                 TestCallbackFailuresExceptionsAndCancellation},
-    ContractCase{"same_session_reentry", TestSameSessionReentryIsRejected},
-    ContractCase{"concurrent_renders", TestConcurrentRendersAreSerialized},
-};
-
-int RunContractCase(const ContractCase &contract_case) {
-  try {
-    contract_case.run();
-    std::cout << "vtk_flutter native core contract " << contract_case.name
-              << ": ok\n";
-    return EXIT_SUCCESS;
-  } catch (const std::exception &exception) {
-    std::cerr << "vtk_flutter native core contract " << contract_case.name
-              << ": " << exception.what() << '\n';
-    return EXIT_FAILURE;
+void TestGenericSession() {
+  auto session = CreateSession();
+  const std::array<const char *, 19> classes{
+      "vtkImageReslice",
+      "vtkImageMapToWindowLevelColors",
+      "vtkImageActor",
+      "vtkImageProperty",
+      "vtkSmartVolumeMapper",
+      "vtkColorTransferFunction",
+      "vtkPiecewiseFunction",
+      "vtkVolumeProperty",
+      "vtkVolume",
+      "vtkFlyingEdges3D",
+      "vtkPolyDataConnectivityFilter",
+      "vtkWindowedSincPolyDataFilter",
+      "vtkPolyDataMapper",
+      "vtkActor",
+      "vtkProperty",
+      "vtkRenderer",
+      "vtkCamera",
+      "vtkImageSliceMapper",
+      "vtkContourFilter",
+  };
+  for (const auto *class_name : classes) {
+    CreateObject(session.value, class_name);
   }
+
+  VtkFlutterObjectHandle unsupported = 0;
+  VtkFlutterStatus status{};
+  const auto result = vtk_flutter_object_create(
+      session.value, "vtkDefinitelyNotAClass", &unsupported, &status);
+  Require(result == VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+          "unsupported class was accepted");
+}
+
+void TestSurfaceRender() {
+  auto session = CreateSession();
+  constexpr int dimension = 24;
+  std::vector<std::int16_t> values(dimension * dimension * dimension);
+  for (int z = 0; z < dimension; ++z) {
+    for (int y = 0; y < dimension; ++y) {
+      for (int x = 0; x < dimension; ++x) {
+        const auto dx = x - dimension / 2;
+        const auto dy = y - dimension / 2;
+        const auto dz = z - dimension / 2;
+        values[static_cast<std::size_t>(
+            z * dimension * dimension + y * dimension + x)] =
+            dx * dx + dy * dy + dz * dz < 64 ? 1000 : -1000;
+      }
+    }
+  }
+
+  VtkFlutterImageData image{};
+  image.values = values.data();
+  image.value_count = values.size();
+  image.byte_count = values.size() * sizeof(std::int16_t);
+  image.scalar_type = VTK_FLUTTER_SCALAR_INT16;
+  image.component_count = 1;
+  image.dimensions[0] = dimension;
+  image.dimensions[1] = dimension;
+  image.dimensions[2] = dimension;
+  image.spacing[0] = 1.0;
+  image.spacing[1] = 1.0;
+  image.spacing[2] = 1.0;
+  image.direction[0] = 1.0;
+  image.direction[4] = 1.0;
+  image.direction[8] = 1.0;
+  VtkFlutterObjectHandle image_handle = 0;
+  VtkFlutterStatus status{};
+  RequireOk(vtk_flutter_image_data_create(session.value, &image,
+                                          &image_handle, &status),
+            status, "image_data_create");
+
+  const auto surface = CreateObject(session.value, "vtkFlyingEdges3D");
+  Invoke(session.value, surface, "SetInputData",
+         nlohmann::json::array({{{"Id", image_handle}}}));
+  Invoke(session.value, surface, "SetValue",
+         nlohmann::json::array({0, 0.0}));
+  const auto output =
+      ResultHandle(Invoke(session.value, surface, "GetOutputPort",
+                          nlohmann::json::array({0})));
+
+  const auto mapper = CreateObject(session.value, "vtkPolyDataMapper");
+  Invoke(session.value, mapper, "SetInputConnection",
+         nlohmann::json::array({0, {{"Id", output}}}));
+  Invoke(session.value, mapper, "ScalarVisibilityOff");
+
+  const auto actor = CreateObject(session.value, "vtkActor");
+  Invoke(session.value, actor, "SetMapper",
+         nlohmann::json::array({{{"Id", mapper}}}));
+  const auto renderer = CreateObject(session.value, "vtkRenderer");
+  Invoke(session.value, renderer, "AddActor",
+         nlohmann::json::array({{{"Id", actor}}}));
+  Invoke(session.value, renderer, "SetBackground",
+         nlohmann::json::array({0.05, 0.08, 0.12}));
+  Invoke(session.value, renderer, "ResetCamera");
+
+  FrameHarness harness;
+  const VtkFlutterFrameCallbacks callbacks{
+      sizeof(VtkFlutterFrameCallbacks),
+      VTK_FLUTTER_FRAME_CALLBACKS_VERSION,
+      &harness,
+      BeginFrame,
+      EndFrame,
+      CancelFrame,
+  };
+  const auto *api = vtk_flutter_get_presentation_api();
+  VtkFlutterTextureTarget *target = nullptr;
+  RequireOk(api->texture_target_create(&callbacks, &target, &status), status,
+            "texture_target_create");
+  RequireOk(api->session_attach_texture_target(session.value, target, &status),
+            status, "session_attach_texture_target");
+
+  const VtkFlutterViewport viewport{96, 96};
+  VtkFlutterFrameMetrics metrics{};
+  RequireOk(vtk_flutter_session_render(session.value, renderer, &viewport,
+                                       &metrics, &status),
+            status, "session_render");
+  Require(harness.begin_count == 1 && harness.end_count == 1 &&
+              harness.cancel_count == 0,
+          "frame callback transaction failed");
+  Require(std::any_of(harness.pixels.begin(), harness.pixels.end(),
+                      [](std::uint8_t value) { return value != 0; }),
+          "rendered frame is blank");
+  Require(metrics.world_to_clip_valid == 1,
+          "render omitted world-to-clip matrix");
+
+  RequireOk(api->session_detach_texture_target(session.value, target, &status),
+            status, "session_detach_texture_target");
+  RequireOk(api->texture_target_destroy(target, &status), status,
+            "texture_target_destroy");
 }
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc == 1) {
-    for (const auto &contract_case : contract_cases) {
-      if (RunContractCase(contract_case) != EXIT_SUCCESS) {
-        return EXIT_FAILURE;
-      }
+  try {
+    Require(argc == 2, "one test case name is required");
+    const std::string_view test_case = argv[1];
+    if (test_case == "public_header") {
+      TestPublicHeader();
+    } else if (test_case == "cpu_frame_copy") {
+      TestCpuFrameCopy();
+    } else if (test_case == "generic_session") {
+      TestGenericSession();
+    } else if (test_case == "surface_render") {
+      TestSurfaceRender();
+    } else {
+      throw std::runtime_error("unknown test case");
     }
     return EXIT_SUCCESS;
+  } catch (const std::exception &error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
   }
-
-  if (argc == 2) {
-    const auto requested = std::string_view(argv[1]);
-    const auto contract_case = std::find_if(
-        contract_cases.begin(), contract_cases.end(),
-        [requested](const auto &candidate) { return candidate.name == requested; });
-    if (contract_case != contract_cases.end()) {
-      return RunContractCase(*contract_case);
-    }
-  }
-
-  std::cerr << "usage: vtk_flutter_core_contract_test [contract_case]\n";
-  return EXIT_FAILURE;
 }

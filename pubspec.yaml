@@ -1,12 +1,14 @@
 name: vtk_flutter
-description: Cross-platform Flutter bindings and texture integration for focused VTK volume rendering.
-version: 0.1.0-dev.1
+description: Domain-agnostic VTK bindings and Flutter texture integration for native and web apps.
+version: 0.2.0-dev.1
+publish_to: none
 homepage: https://github.com/wwwdata/vtk_flutter
 repository: https://github.com/wwwdata/vtk_flutter
 issue_tracker: https://github.com/wwwdata/vtk_flutter/issues
 topics:
   - vtk
   - visualization
+  - 3d
   - volume-rendering
   - ffi
 

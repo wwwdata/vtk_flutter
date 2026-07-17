@@ -1,12 +1,18 @@
 #ifndef VTK_FLUTTER_CALLBACK_RENDER_TARGET_H_
 #define VTK_FLUTTER_CALLBACK_RENDER_TARGET_H_
 
-#include "render_target.h"
+#include "vtk_flutter.h"
+
+#include <vtkSmartPointer.h>
 
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
+
+VTK_ABI_NAMESPACE_BEGIN
+class vtkRenderer;
+VTK_ABI_NAMESPACE_END
 
 namespace vtk_flutter {
 class FrameCallbackFailure final : public std::runtime_error {
@@ -19,28 +25,26 @@ private:
   int32_t code_;
 };
 
-// Copies tightly packed, bottom-up VTK RGBA pixels into a validated top-down
-// caller frame. Exposed internally so the byte-level contract can be tested
-// independently of a graphics driver.
 void CopyRgbaBottomUpToFrame(const std::uint8_t *source,
                              const VtkFlutterViewport &viewport,
-                             const VtkFlutterCpuFrameV2 &frame);
+                             const VtkFlutterCpuFrame &frame);
 
-class CallbackRenderTarget final : public RenderTarget {
+class CallbackRenderTarget final {
 public:
-  explicit CallbackRenderTarget(const VtkFlutterFrameCallbacksV2 &callbacks);
-  ~CallbackRenderTarget() override;
+  explicit CallbackRenderTarget(const VtkFlutterFrameCallbacks &callbacks);
+  ~CallbackRenderTarget();
 
   CallbackRenderTarget(const CallbackRenderTarget &) = delete;
   CallbackRenderTarget &operator=(const CallbackRenderTarget &) = delete;
 
-  void Render(PreparedView view, const VtkFlutterViewport &viewport,
-              VtkFlutterMetrics &metrics) override;
+  void Render(vtkSmartPointer<vtkRenderer> renderer,
+              const VtkFlutterViewport &viewport,
+              VtkFlutterFrameMetrics &metrics);
 
 private:
   class Impl;
 
-  VtkFlutterFrameCallbacksV2 callbacks_{};
+  VtkFlutterFrameCallbacks callbacks_{};
   std::unique_ptr<Impl> impl_;
 };
 } // namespace vtk_flutter

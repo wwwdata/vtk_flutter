@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:io';
 
-const vtkVersion = '9.5.2';
-const vtkBuildParallelJobs = '2';
+const vtkVersion = '9.6.2';
+const vtkBuildParallelJobs = '10';
 const vtkArchiveSha256 =
-    'cee64b98d270ff7302daf1ef13458dff5d5ac1ecb45d47723835f7f7d562c989';
+    'aed12cec12a9609179bf66329070266627ca64244a10856a452b2a17ffb04a1d';
 const vtkArchiveUrl =
-    'https://vtk.org/files/release/9.5/VTK-$vtkVersion.tar.gz';
+    'https://vtk.org/files/release/9.6/VTK-$vtkVersion.tar.gz';
 
 const supportedPlatforms = <String>{
   'macos-arm64',
@@ -24,10 +24,12 @@ const vtkModules = <String>[
   'CommonCore',
   'CommonDataModel',
   'FiltersCore',
+  'ImagingColor',
   'ImagingCore',
   'RenderingCore',
   'RenderingOpenGL2',
   'RenderingVolumeOpenGL2',
+  'SerializationManager',
 ];
 
 const _moduleGroups = <String>[
@@ -208,6 +210,8 @@ List<CmakeCommand> createBuildPlan({
           '-DVTK_BUILD_ALL_MODULES=OFF',
           '-DVTK_BUILD_EXAMPLES=OFF',
           '-DVTK_BUILD_TESTING=OFF',
+          '-DVTK_ENABLE_WRAPPING=ON',
+          '-DVTK_WRAP_SERIALIZATION=ON',
           '-DBUILD_SHARED_LIBS=ON',
         ],
       ),
@@ -234,7 +238,8 @@ List<CmakeCommand> createBuildPlan({
     '-DVTK_BUILD_TESTING=OFF',
     '-DVTK_ENABLE_LOGGING=OFF',
     '-DVTK_ENABLE_REMOTE_MODULES=OFF',
-    '-DVTK_ENABLE_WRAPPING=OFF',
+    '-DVTK_ENABLE_WRAPPING=ON',
+    '-DVTK_WRAP_SERIALIZATION=ON',
     '-DVTK_USE_CUDA=OFF',
     '-DVTK_USE_MPI=OFF',
     for (final group in _moduleGroups) '-DVTK_GROUP_ENABLE_$group=DONT_WANT',
