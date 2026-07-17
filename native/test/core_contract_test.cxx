@@ -130,6 +130,20 @@ void TestPublicHeader() {
           "presentation API version mismatch");
   Require(api->struct_size >= sizeof(VtkFlutterPresentationApi),
           "presentation API is truncated");
+  Require(api->session_is_valid != nullptr,
+          "presentation API session validation is missing");
+
+  VtkFlutterStatus status{};
+  VtkFlutterSession *session = nullptr;
+  RequireOk(vtk_flutter_session_create(&session, &status), status,
+            "session_create");
+  RequireOk(api->session_is_valid(session, &status), status,
+            "session_is_valid");
+  vtk_flutter_session_destroy(session);
+  Require(api->session_is_valid(session, &status) ==
+              VTK_FLUTTER_STATUS_INVALID_STATE,
+          "a destroyed session remained valid");
+  vtk_flutter_session_destroy(session);
 }
 
 void TestCpuFrameCopy() {
@@ -186,6 +200,24 @@ void TestGenericSession() {
       session.value, "vtkDefinitelyNotAClass", &unsupported, &status);
   Require(result == VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
           "unsupported class was accepted");
+
+  const auto renderer = CreateObject(session.value, "vtkRenderer");
+  char *invocation_result = nullptr;
+  status = {};
+  const auto invalid_invocation = vtk_flutter_object_invoke(
+      session.value, renderer, "DefinitelyNotAMethod", "[]",
+      &invocation_result, &status);
+  Require(invalid_invocation == VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+          "failed invocation was reported as successful");
+  Require(invocation_result == nullptr,
+          "failed invocation returned a result");
+
+  status = {};
+  RequireOk(vtk_flutter_object_destroy(session.value, renderer, &status),
+            status, "first object destroy");
+  status = {};
+  RequireOk(vtk_flutter_object_destroy(session.value, renderer, &status),
+            status, "idempotent object destroy");
 }
 
 void TestSurfaceRender() {

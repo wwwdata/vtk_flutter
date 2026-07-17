@@ -7,11 +7,16 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 namespace {
+std::mutex g_sessions_mutex;
+std::unordered_set<VtkFlutterSession *> g_sessions;
+
 void SetStatus(VtkFlutterStatus *status, VtkFlutterStatusCode code,
                std::string_view message = {}) {
   if (status == nullptr) {
@@ -54,28 +59,50 @@ int32_t TranslateErrors(VtkFlutterStatus *status, Action action) {
   }
 }
 
+template <typename Action>
+int32_t WithLiveSession(VtkFlutterSession *session, VtkFlutterStatus *status,
+                        Action action) {
+  if (session == nullptr) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
+              "session is required");
+    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
+  }
+  std::lock_guard lock(g_sessions_mutex);
+  if (!g_sessions.contains(session)) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
+              "session is not live");
+    return VTK_FLUTTER_STATUS_INVALID_STATE;
+  }
+  return TranslateErrors(status, [&] { action(session->value); });
+}
+
+int32_t VTK_FLUTTER_CALL SessionIsValid(VtkFlutterSession *session,
+                                        VtkFlutterStatus *status) {
+  return WithLiveSession(session, status, [](auto &) {});
+}
+
 int32_t VTK_FLUTTER_CALL SessionAttachTextureTarget(
     VtkFlutterSession *session, VtkFlutterTextureTarget *target,
     VtkFlutterStatus *status) {
-  if (session == nullptr || target == nullptr) {
+  if (target == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "session and target are required");
+              "target is required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
-  return TranslateErrors(
-      status, [&] { session->value.AttachTextureTarget(*target); });
+  return WithLiveSession(
+      session, status, [&](auto &value) { value.AttachTextureTarget(*target); });
 }
 
 int32_t VTK_FLUTTER_CALL SessionDetachTextureTarget(
     VtkFlutterSession *session, VtkFlutterTextureTarget *target,
     VtkFlutterStatus *status) {
-  if (session == nullptr || target == nullptr) {
+  if (target == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "session and target are required");
+              "target is required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
-  return TranslateErrors(
-      status, [&] { session->value.DetachTextureTarget(*target); });
+  return WithLiveSession(
+      session, status, [&](auto &value) { value.DetachTextureTarget(*target); });
 }
 
 int32_t VTK_FLUTTER_CALL TextureTargetCreate(
@@ -110,6 +137,7 @@ const VtkFlutterPresentationApi kPresentationApi = {
     sizeof(VtkFlutterPresentationApi),
     VTK_FLUTTER_PRESENTATION_API_VERSION,
     vtk_flutter_status_clear,
+    SessionIsValid,
     SessionAttachTextureTarget,
     SessionDetachTextureTarget,
     TextureTargetCreate,
@@ -140,6 +168,10 @@ int32_t VTK_FLUTTER_CALL vtk_flutter_session_create(
   *out_session = nullptr;
   return TranslateErrors(status, [&] {
     auto session = std::make_unique<VtkFlutterSession>();
+    {
+      std::lock_guard lock(g_sessions_mutex);
+      g_sessions.insert(session.get());
+    }
     *out_session = session.release();
   });
 }
@@ -147,6 +179,12 @@ int32_t VTK_FLUTTER_CALL vtk_flutter_session_create(
 void VTK_FLUTTER_CALL vtk_flutter_session_destroy(
     VtkFlutterSession *session) {
   try {
+    {
+      std::lock_guard lock(g_sessions_mutex);
+      if (g_sessions.erase(session) == 0U) {
+        return;
+      }
+    }
     delete session;
   } catch (...) {
   }
@@ -155,43 +193,37 @@ void VTK_FLUTTER_CALL vtk_flutter_session_destroy(
 int32_t VTK_FLUTTER_CALL vtk_flutter_object_create(
     VtkFlutterSession *session, const char *class_name,
     VtkFlutterObjectHandle *out_object, VtkFlutterStatus *status) {
-  if (session == nullptr || class_name == nullptr || out_object == nullptr) {
+  if (class_name == nullptr || out_object == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "session, class_name, and out_object are required");
+              "class_name and out_object are required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
   *out_object = 0;
-  return TranslateErrors(
-      status, [&] { *out_object = session->value.CreateObject(class_name); });
+  return WithLiveSession(session, status, [&](auto &value) {
+    *out_object = value.CreateObject(class_name);
+  });
 }
 
 int32_t VTK_FLUTTER_CALL vtk_flutter_object_destroy(
     VtkFlutterSession *session, VtkFlutterObjectHandle object,
     VtkFlutterStatus *status) {
-  if (session == nullptr) {
-    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "session is required");
-    return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
-  }
-  return TranslateErrors(status,
-                         [&] { session->value.DestroyObject(object); });
+  return WithLiveSession(
+      session, status, [&](auto &value) { value.DestroyObject(object); });
 }
 
 int32_t VTK_FLUTTER_CALL vtk_flutter_object_invoke(
     VtkFlutterSession *session, VtkFlutterObjectHandle object,
     const char *method_name, const char *arguments_json, char **result_json,
     VtkFlutterStatus *status) {
-  if (session == nullptr || method_name == nullptr ||
-      arguments_json == nullptr || result_json == nullptr) {
+  if (method_name == nullptr || arguments_json == nullptr ||
+      result_json == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "session, method_name, arguments_json, and result_json are "
-              "required");
+              "method_name, arguments_json, and result_json are required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
   *result_json = nullptr;
-  return TranslateErrors(status, [&] {
-    const auto result =
-        session->value.Invoke(object, method_name, arguments_json);
+  return WithLiveSession(session, status, [&](auto &value) {
+    const auto result = value.Invoke(object, method_name, arguments_json);
     auto *buffer = static_cast<char *>(std::malloc(result.size() + 1U));
     if (buffer == nullptr) {
       throw std::bad_alloc();
@@ -208,14 +240,14 @@ void VTK_FLUTTER_CALL vtk_flutter_string_free(char *value) {
 int32_t VTK_FLUTTER_CALL vtk_flutter_image_data_create(
     VtkFlutterSession *session, const VtkFlutterImageData *image,
     VtkFlutterObjectHandle *out_object, VtkFlutterStatus *status) {
-  if (session == nullptr || image == nullptr || out_object == nullptr) {
+  if (image == nullptr || out_object == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "session, image, and out_object are required");
+              "image and out_object are required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
   *out_object = 0;
-  return TranslateErrors(status, [&] {
-    *out_object = session->value.CreateImageData(*image);
+  return WithLiveSession(session, status, [&](auto &value) {
+    *out_object = value.CreateImageData(*image);
   });
 }
 
@@ -223,15 +255,15 @@ int32_t VTK_FLUTTER_CALL vtk_flutter_session_render(
     VtkFlutterSession *session, VtkFlutterObjectHandle renderer,
     const VtkFlutterViewport *viewport, VtkFlutterFrameMetrics *metrics,
     VtkFlutterStatus *status) {
-  if (session == nullptr || viewport == nullptr || metrics == nullptr) {
+  if (viewport == nullptr || metrics == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "session, viewport, and metrics are required");
+              "viewport and metrics are required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
   *metrics = {};
   VtkFlutterFrameMetrics rendered_metrics{};
-  const auto code = TranslateErrors(status, [&] {
-    session->value.Render(renderer, *viewport, rendered_metrics);
+  const auto code = WithLiveSession(session, status, [&](auto &value) {
+    value.Render(renderer, *viewport, rendered_metrics);
   });
   if (code == VTK_FLUTTER_STATUS_OK) {
     *metrics = rendered_metrics;

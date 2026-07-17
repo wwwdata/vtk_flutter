@@ -15,6 +15,6 @@ _Static_assert(sizeof(VtkFlutterObjectHandle) == sizeof(uint32_t),
                "object handles must remain 32-bit");
 
 int vtk_flutter_public_header_contract(void) {
-  return VTK_FLUTTER_ABI_VERSION == 3U &&
-         VTK_FLUTTER_PRESENTATION_API_VERSION == 1U;
+  return VTK_FLUTTER_ABI_VERSION == 4U &&
+         VTK_FLUTTER_PRESENTATION_API_VERSION == 2U;
 }

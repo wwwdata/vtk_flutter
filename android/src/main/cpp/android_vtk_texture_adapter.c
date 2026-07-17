@@ -92,7 +92,8 @@ static bool ValidatePresentationApi(const VtkFlutterPresentationApi *api,
     *message = "VTK presentation API table is too small";
     return false;
   }
-  if (api->status_clear == NULL || api->session_attach_texture_target == NULL ||
+  if (api->status_clear == NULL || api->session_is_valid == NULL ||
+      api->session_attach_texture_target == NULL ||
       api->session_detach_texture_target == NULL ||
       api->texture_target_create == NULL ||
       api->texture_target_destroy == NULL) {

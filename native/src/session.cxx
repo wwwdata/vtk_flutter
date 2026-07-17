@@ -2,6 +2,7 @@
 
 #include <vtkDataArray.h>
 #include <vtkImageData.h>
+#include <vtkInvoker.h>
 #include <vtkObjectManager.h>
 #include <vtkPointData.h>
 #include <vtkRenderer.h>
@@ -221,9 +222,13 @@ void Session::DestroyObject(VtkFlutterObjectHandle object) {
   if (object == 0) {
     throw std::invalid_argument("object handle must be non-zero");
   }
-  if (vtkSessionDestroyObject(session_, object) == vtkSessionResultFailure) {
-    throw std::invalid_argument("VTK object does not exist");
+  if (manager_->GetObjectAtId(object) == nullptr) {
+    return;
   }
+  if (!manager_->UnRegisterObject(object)) {
+    throw std::runtime_error("VTK could not destroy the object");
+  }
+  manager_->UnRegisterState(object);
 }
 
 std::string Session::Invoke(VtkFlutterObjectHandle object,
@@ -245,15 +250,24 @@ std::string Session::Invoke(VtkFlutterObjectHandle object,
   if (!arguments->json.is_array()) {
     throw std::invalid_argument("VTK method arguments must be a JSON array");
   }
-  auto result = std::unique_ptr<vtkSessionJsonImpl>(
-      static_cast<vtkSessionJsonImpl *>(vtkSessionInvoke(
-          session_, object, method_name, arguments.get())));
-  if (result == nullptr ||
-      (result->json.is_object() && result->json.empty())) {
+  auto result =
+      manager_->GetInvoker()->Invoke(object, method_name, arguments->json);
+  if (!result.value("Success", false)) {
+    const auto message =
+        result.value("Message", std::string("no matching VTK overload"));
     throw std::invalid_argument(std::string("VTK cannot invoke ") +
-                                method_name + " on this object");
+                                method_name + ": " + message);
   }
-  return result->json.dump();
+  if (const auto value = result.find("Value"); value != result.end()) {
+    return value->dump();
+  }
+  if (const auto identifier = result.find("Id");
+      identifier != result.end()) {
+    const auto result_object =
+        identifier->get<VtkFlutterObjectHandle>();
+    return nlohmann::json{{"Id", result_object}}.dump();
+  }
+  return "null";
 }
 
 VtkFlutterObjectHandle

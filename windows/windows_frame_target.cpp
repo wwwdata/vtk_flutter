@@ -214,26 +214,26 @@ const VtkFlutterPresentationApi &
 ValidatePresentationApiAddress(std::uintptr_t address) {
   if (address == 0 || !IsReadablePresentationApiAddress(address)) {
     throw std::invalid_argument(
-        "presentationApiAddress must identify a readable presentation API v1 "
+        "presentationApiAddress must identify a readable presentation API v2 "
         "table");
   }
   const auto *api =
       reinterpret_cast<const VtkFlutterPresentationApi *>(address);
   if (api->struct_size < kRequiredPresentationApiSize) {
     throw std::invalid_argument(
-        "Native VTK presentation API v1 table is too small");
+        "Native VTK presentation API v2 table is too small");
   }
   if (api->version != VTK_FLUTTER_PRESENTATION_API_VERSION) {
     throw std::invalid_argument(
-        "Native VTK presentation API v1 table has an unsupported version");
+        "Native VTK presentation API v2 table has an unsupported version");
   }
-  if (api->status_clear == nullptr ||
+  if (api->status_clear == nullptr || api->session_is_valid == nullptr ||
       api->session_attach_texture_target == nullptr ||
       api->session_detach_texture_target == nullptr ||
       api->texture_target_create == nullptr ||
       api->texture_target_destroy == nullptr) {
     throw std::invalid_argument(
-        "Native VTK presentation API v1 table is incomplete");
+        "Native VTK presentation API v2 table is incomplete");
   }
   return *api;
 }

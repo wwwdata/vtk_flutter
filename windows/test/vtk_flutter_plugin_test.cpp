@@ -78,11 +78,17 @@ std::int32_t VTK_FLUTTER_CALL TargetDestroy(VtkFlutterTextureTarget *,
   return VTK_FLUTTER_STATUS_OK;
 }
 
+std::int32_t VTK_FLUTTER_CALL SessionIsValid(VtkFlutterSession *,
+                                             VtkFlutterStatus *) {
+  return VTK_FLUTTER_STATUS_OK;
+}
+
 VtkFlutterPresentationApi CompletePresentationApi() {
   return {
       sizeof(VtkFlutterPresentationApi),
       VTK_FLUTTER_PRESENTATION_API_VERSION,
       StatusClear,
+      SessionIsValid,
       AttachTarget,
       DetachTarget,
       TargetCreate,

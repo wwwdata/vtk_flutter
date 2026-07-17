@@ -1,6 +1,6 @@
 import 'package:flutter/widgets.dart';
 
-import 'renderer.dart';
+import 'api/vtk_api.dart';
 
 final class VtkView extends StatelessWidget {
   const VtkView({
@@ -9,10 +9,10 @@ final class VtkView extends StatelessWidget {
     super.key,
   });
 
-  final VtkRenderSession session;
+  final VtkSession session;
   final FilterQuality filterQuality;
 
   @override
   Widget build(BuildContext context) =>
-      Texture(textureId: session.textureId, filterQuality: filterQuality);
+      Texture(textureId: session.viewId, filterQuality: filterQuality);
 }

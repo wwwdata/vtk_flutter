@@ -4,10 +4,10 @@
 
 Pod::Spec.new do |s|
   s.name             = 'vtk_flutter'
-  s.version          = '0.1.0-dev.1'
-  s.summary          = 'VTK-backed volume rendering for Flutter.'
+  s.version          = '0.2.0-dev.1'
+  s.summary          = 'Domain-agnostic VTK rendering for Flutter.'
   s.description      = <<-DESC
-Focused VTK rendering for Flutter applications.
+Typed Dart VTK pipelines with Flutter texture presentation.
                        DESC
   s.homepage         = 'https://github.com/wwwdata/vtk_flutter'
   s.license          = { :type => 'BSD-3-Clause', :file => '../LICENSE' }

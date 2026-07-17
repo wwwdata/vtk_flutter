@@ -1,9 +1,7 @@
-import 'dart:typed_data';
-
 import 'package:flutter/widgets.dart';
 
-import '../vtk_flutter_web.dart';
-import 'renderer.dart';
+import 'api/vtk_api.dart';
+import 'web/vtk_web_frame_store.dart';
 
 final class VtkView extends StatelessWidget {
   const VtkView({
@@ -12,16 +10,16 @@ final class VtkView extends StatelessWidget {
     super.key,
   });
 
-  final VtkRenderSession session;
+  final VtkSession session;
   final FilterQuality filterQuality;
 
   @override
-  Widget build(BuildContext context) => ValueListenableBuilder<Uint8List?>(
-    valueListenable: VtkFlutterWeb.imageFor(session.textureId),
-    builder: (context, bytes, _) {
-      if (bytes == null) return const SizedBox.expand();
+  Widget build(BuildContext context) => ValueListenableBuilder<VtkWebFrame?>(
+    valueListenable: VtkWebFrameStore.frameFor(session.viewId),
+    builder: (context, frame, _) {
+      if (frame == null) return const SizedBox.expand();
       return Image.memory(
-        bytes,
+        frame.pngBytes,
         fit: BoxFit.contain,
         filterQuality: filterQuality,
         gaplessPlayback: true,

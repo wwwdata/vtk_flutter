@@ -13,6 +13,8 @@ VtkFlutterPresentationApi CompletePresentationApi() {
   api.struct_size = sizeof(api);
   api.version = VTK_FLUTTER_PRESENTATION_API_VERSION;
   api.status_clear = NonNullFunction<decltype(api.status_clear)>();
+  api.session_is_valid =
+      NonNullFunction<decltype(api.session_is_valid)>();
   api.session_attach_texture_target =
       NonNullFunction<decltype(api.session_attach_texture_target)>();
   api.session_detach_texture_target =
@@ -105,7 +107,15 @@ VtkFlutterPresentationApi CompletePresentationApi() {
   XCTAssertFalse(VtkFlutterDecodeViewport(
       @{@"width" : @0, @"height" : @320}, &viewport, &error));
   XCTAssertEqualObjects(error,
-                        @"Viewport width and height must be positive");
+                        @"Viewport dimensions must be between 1 and 8192 pixels");
+  XCTAssertFalse(VtkFlutterDecodeViewport(
+      @{@"width" : @8193, @"height" : @320}, &viewport, &error));
+  XCTAssertEqualObjects(error,
+                        @"Viewport dimensions must be between 1 and 8192 pixels");
+  XCTAssertFalse(VtkFlutterDecodeViewport(
+      @{@"width" : @640.5, @"height" : @320}, &viewport, &error));
+  XCTAssertEqualObjects(error,
+                        @"Viewport width and height must be integers");
 }
 
 @end

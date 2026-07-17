@@ -348,6 +348,16 @@ final class VtkFlutterPresentationApi extends ffi.Struct {
     ffi.NativeFunction<
       ffi.Int32 Function(
         ffi.Pointer<VtkFlutterSession> session,
+        ffi.Pointer<VtkFlutterStatus> status,
+      )
+    >
+  >
+  session_is_valid;
+
+  external ffi.Pointer<
+    ffi.NativeFunction<
+      ffi.Int32 Function(
+        ffi.Pointer<VtkFlutterSession> session,
         ffi.Pointer<VtkFlutterTextureTarget> target,
         ffi.Pointer<VtkFlutterStatus> status,
       )
@@ -388,9 +398,9 @@ final class VtkFlutterPresentationApi extends ffi.Struct {
   texture_target_destroy;
 }
 
-const int VTK_FLUTTER_ABI_VERSION = 3;
+const int VTK_FLUTTER_ABI_VERSION = 4;
 
-const int VTK_FLUTTER_PRESENTATION_API_VERSION = 1;
+const int VTK_FLUTTER_PRESENTATION_API_VERSION = 2;
 
 const int VTK_FLUTTER_FRAME_CALLBACKS_VERSION = 1;
 

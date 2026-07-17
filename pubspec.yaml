@@ -42,7 +42,8 @@ dev_dependencies:
 # The following section is specific to Flutter packages.
 flutter:
   assets:
-    - assets/vtk_locator.js
+    - assets/vtk_runtime.js
+    - assets/vtk_runtime.LICENSE.txt
 
   # This section identifies this Flutter project as a plugin project.
   # The 'pluginClass' specifies the class (in Java, Kotlin, Swift, Objective-C, etc.)

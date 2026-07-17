@@ -1,4 +1,4 @@
-Generated from web/package-lock.json by web/scripts/build.mjs.
+Generated from bundled inputs resolved by web/package-lock.json.
 
 @kitware/vtk.js 36.4.1 (BSD-3-Clause)
 

@@ -9,18 +9,18 @@ const outputDirectory = path.resolve(webDirectory, '..', 'assets');
 
 const result = await build({
   bundle: true,
-  entryPoints: [path.join(webDirectory, 'src', 'vtk_locator.js')],
+  entryPoints: [path.join(webDirectory, 'src', 'vtk_runtime.js')],
   format: 'esm',
   legalComments: 'none',
   loader: { '.glsl': 'text' },
   metafile: true,
   minify: true,
-  outfile: path.join(outputDirectory, 'vtk_locator.js'),
+  outfile: path.join(outputDirectory, 'vtk_runtime.js'),
   platform: 'browser',
   target: 'es2022',
 });
 
-const bundlePath = path.join(outputDirectory, 'vtk_locator.js');
+const bundlePath = path.join(outputDirectory, 'vtk_runtime.js');
 const bundle = await readFile(bundlePath, 'utf8');
 await writeFile(bundlePath, bundle.replace(/[\t ]+$/gm, ''));
 
@@ -60,6 +60,6 @@ for (const packageName of packages) {
 }
 
 await writeFile(
-  path.join(outputDirectory, 'vtk_locator.LICENSE.txt'),
-  `Generated from web/package-lock.json by web/scripts/build.mjs.\n\n${notices.join('\n\n---\n\n')}\n`,
+  path.join(outputDirectory, 'vtk_runtime.LICENSE.txt'),
+  `Generated from bundled inputs resolved by web/package-lock.json.\n\n${notices.join('\n\n---\n\n')}\n`,
 );

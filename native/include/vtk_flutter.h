@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-#define VTK_FLUTTER_ABI_VERSION 3U
-#define VTK_FLUTTER_PRESENTATION_API_VERSION 1U
+#define VTK_FLUTTER_ABI_VERSION 4U
+#define VTK_FLUTTER_PRESENTATION_API_VERSION 2U
 #define VTK_FLUTTER_FRAME_CALLBACKS_VERSION 1U
 #define VTK_FLUTTER_CPU_FRAME_VERSION 1U
 #define VTK_FLUTTER_STATUS_MESSAGE_CAPACITY 512U
@@ -134,6 +134,8 @@ typedef struct VtkFlutterPresentationApi {
   uint32_t struct_size;
   uint32_t version;
   void(VTK_FLUTTER_CALL *status_clear)(VtkFlutterStatus *status);
+  int32_t(VTK_FLUTTER_CALL *session_is_valid)(
+      VtkFlutterSession *session, VtkFlutterStatus *status);
   int32_t(VTK_FLUTTER_CALL *session_attach_texture_target)(
       VtkFlutterSession *session, VtkFlutterTextureTarget *target,
       VtkFlutterStatus *status);

@@ -1,6 +1,14 @@
 library;
 
-export 'src/exceptions.dart';
-export 'src/models.dart';
-export 'src/renderer.dart';
+export 'src/api/vtk_api.dart'
+    hide
+        VtkBackend,
+        VtkBackendObjectHandle,
+        VtkBackendOperation,
+        VtkBackendSession,
+        VtkDynamicBackendSession,
+        VtkDynamicObject,
+        VtkDynamicSession,
+        VtkExperimentalSession,
+        createVtkRuntimeForBackend;
 export 'src/vtk_view.dart';

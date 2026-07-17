@@ -5,6 +5,9 @@
 #include <limits>
 
 namespace {
+constexpr int64_t kMaximumViewportDimension = 8192;
+constexpr uint64_t kMaximumFrameBytes = 256ULL * 1024ULL * 1024ULL;
+
 BOOL Fail(NSString* message, NSString** errorMessage) {
   if (errorMessage != nullptr) {
     *errorMessage = message;
@@ -46,6 +49,7 @@ constexpr std::size_t kRequiredPresentationApiSize =
 
 BOOL HasRequiredPresentationFunctions(const VtkFlutterPresentationApi* api) {
   return api->status_clear != nullptr &&
+         api->session_is_valid != nullptr &&
          api->session_attach_texture_target != nullptr &&
          api->session_detach_texture_target != nullptr &&
          api->texture_target_create != nullptr &&
@@ -113,9 +117,23 @@ BOOL VtkFlutterDecodeViewport(id arguments, VtkFlutterViewport* viewport,
   if (!IsNonBooleanNumber(width) || !IsNonBooleanNumber(height)) {
     return Fail(@"Viewport width and height must be numbers", errorMessage);
   }
-  *viewport = {.width = [width intValue], .height = [height intValue]};
-  if (viewport->width <= 0 || viewport->height <= 0) {
-    return Fail(@"Viewport width and height must be positive", errorMessage);
+  if (!IsNonBooleanInteger(width) || !IsNonBooleanInteger(height)) {
+    return Fail(@"Viewport width and height must be integers", errorMessage);
   }
+  const int64_t decodedWidth = [width longLongValue];
+  const int64_t decodedHeight = [height longLongValue];
+  if (decodedWidth <= 0 || decodedHeight <= 0 ||
+      decodedWidth > kMaximumViewportDimension ||
+      decodedHeight > kMaximumViewportDimension) {
+    return Fail(@"Viewport dimensions must be between 1 and 8192 pixels",
+                errorMessage);
+  }
+  const uint64_t frameBytes = static_cast<uint64_t>(decodedWidth) *
+                              static_cast<uint64_t>(decodedHeight) * 4ULL;
+  if (frameBytes > kMaximumFrameBytes) {
+    return Fail(@"Viewport exceeds the 256 MiB frame limit", errorMessage);
+  }
+  *viewport = {.width = static_cast<int32_t>(decodedWidth),
+               .height = static_cast<int32_t>(decodedHeight)};
   return YES;
 }
