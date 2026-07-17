@@ -130,7 +130,11 @@ Future<void> main(List<String> arguments) async {
   final output = File(_outputPath);
 
   if (check) {
-    if (!output.existsSync() || await output.readAsString() != generated) {
+    if (!output.existsSync() ||
+        !nativeLicenseInventoryMatches(
+          existing: await output.readAsString(),
+          generated: generated,
+        )) {
       stderr.writeln(
         '$_outputPath is stale. Regenerate it from the pinned VTK source.',
       );
@@ -140,6 +144,13 @@ Future<void> main(List<String> arguments) async {
   }
 
   await output.writeAsString(generated);
+}
+
+bool nativeLicenseInventoryMatches({
+  required String existing,
+  required String generated,
+}) {
+  return existing.replaceAll('\r\n', '\n') == generated;
 }
 
 String? _option(List<String> arguments, String name) {
