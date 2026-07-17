@@ -27,14 +27,14 @@ void SetStatus(VtkFlutterStatus *status, std::int32_t code,
   status->message[count] = '\0';
 }
 
-constexpr std::size_t kRequiredCoreApiSize =
-    offsetof(VtkFlutterCoreApiV2, texture_target_destroy) +
-    sizeof(decltype(VtkFlutterCoreApiV2::texture_target_destroy));
+constexpr std::size_t kRequiredPresentationApiSize =
+    offsetof(VtkFlutterPresentationApi, texture_target_destroy) +
+    sizeof(decltype(VtkFlutterPresentationApi::texture_target_destroy));
 
-bool IsReadableCoreApiAddress(std::uintptr_t address) noexcept {
-  if (address % alignof(VtkFlutterCoreApiV2) != 0 ||
-      address >
-          std::numeric_limits<std::uintptr_t>::max() - kRequiredCoreApiSize) {
+bool IsReadablePresentationApiAddress(std::uintptr_t address) noexcept {
+  if (address % alignof(VtkFlutterPresentationApi) != 0 ||
+      address > std::numeric_limits<std::uintptr_t>::max() -
+                    kRequiredPresentationApiSize) {
     return false;
   }
 #if defined(_WIN32)
@@ -47,7 +47,8 @@ bool IsReadableCoreApiAddress(std::uintptr_t address) noexcept {
   }
   const auto region_end =
       reinterpret_cast<std::uintptr_t>(region.BaseAddress) + region.RegionSize;
-  return address <= region_end && region_end - address >= kRequiredCoreApiSize;
+  return address <= region_end &&
+         region_end - address >= kRequiredPresentationApiSize;
 #else
   return true;
 #endif
@@ -55,10 +56,10 @@ bool IsReadableCoreApiAddress(std::uintptr_t address) noexcept {
 
 } // namespace
 
-VtkFlutterFrameCallbacksV2 WindowsFrameTarget::Callbacks() noexcept {
+VtkFlutterFrameCallbacks WindowsFrameTarget::Callbacks() noexcept {
   return {
-      sizeof(VtkFlutterFrameCallbacksV2),
-      VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2,
+      sizeof(VtkFlutterFrameCallbacks),
+      VTK_FLUTTER_FRAME_CALLBACKS_VERSION,
       this,
       BeginFrameCallback,
       EndFrameCallback,
@@ -102,7 +103,7 @@ void WindowsFrameTarget::Clear() noexcept {
 
 std::int32_t VTK_FLUTTER_CALL WindowsFrameTarget::BeginFrameCallback(
     void *user_data, const VtkFlutterViewport *viewport,
-    VtkFlutterCpuFrameV2 *frame, VtkFlutterStatus *status) noexcept {
+    VtkFlutterCpuFrame *frame, VtkFlutterStatus *status) noexcept {
   if (user_data == nullptr || viewport == nullptr || frame == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
               "Windows begin_frame requires target, viewport, and frame");
@@ -124,7 +125,7 @@ std::int32_t VTK_FLUTTER_CALL WindowsFrameTarget::BeginFrameCallback(
 }
 
 std::int32_t VTK_FLUTTER_CALL WindowsFrameTarget::EndFrameCallback(
-    void *user_data, const VtkFlutterMetrics *metrics,
+    void *user_data, const VtkFlutterFrameMetrics *metrics,
     VtkFlutterStatus *status) noexcept {
   if (user_data == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
@@ -143,7 +144,7 @@ WindowsFrameTarget::CancelFrameCallback(void *user_data) noexcept {
 }
 
 std::int32_t WindowsFrameTarget::BeginFrame(const VtkFlutterViewport &viewport,
-                                            VtkFlutterCpuFrameV2 &frame,
+                                            VtkFlutterCpuFrame &frame,
                                             VtkFlutterStatus *status) {
   if (viewport.width <= 0 || viewport.height <= 0) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
@@ -175,8 +176,8 @@ std::int32_t WindowsFrameTarget::BeginFrame(const VtkFlutterViewport &viewport,
   }
 
   frame = {};
-  frame.struct_size = sizeof(VtkFlutterCpuFrameV2);
-  frame.version = VTK_FLUTTER_CPU_FRAME_VERSION_2;
+  frame.struct_size = sizeof(VtkFlutterCpuFrame);
+  frame.version = VTK_FLUTTER_CPU_FRAME_VERSION;
   frame.pixels = pending->pixels.data();
   frame.capacity_bytes = pending->pixels.size();
   frame.row_bytes = pending->row_bytes;
@@ -185,7 +186,7 @@ std::int32_t WindowsFrameTarget::BeginFrame(const VtkFlutterViewport &viewport,
   return VTK_FLUTTER_STATUS_OK;
 }
 
-std::int32_t WindowsFrameTarget::EndFrame(const VtkFlutterMetrics *metrics,
+std::int32_t WindowsFrameTarget::EndFrame(const VtkFlutterFrameMetrics *metrics,
                                           VtkFlutterStatus *status) noexcept {
   if (metrics == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
@@ -209,29 +210,30 @@ void WindowsFrameTarget::CancelFrame() noexcept {
   pending_.reset();
 }
 
-const VtkFlutterCoreApiV2 &ValidateCoreApiAddress(std::uintptr_t address) {
-  if (address == 0 || !IsReadableCoreApiAddress(address)) {
+const VtkFlutterPresentationApi &
+ValidatePresentationApiAddress(std::uintptr_t address) {
+  if (address == 0 || !IsReadablePresentationApiAddress(address)) {
     throw std::invalid_argument(
-        "coreApiAddress must identify a readable ABI v2 table");
+        "presentationApiAddress must identify a readable presentation API v1 "
+        "table");
   }
-  const auto *api = reinterpret_cast<const VtkFlutterCoreApiV2 *>(address);
-  if (api->struct_size < kRequiredCoreApiSize) {
-    throw std::invalid_argument("Native VTK ABI v2 table is too small");
-  }
-  if (api->version != VTK_FLUTTER_CORE_API_VERSION_2) {
+  const auto *api =
+      reinterpret_cast<const VtkFlutterPresentationApi *>(address);
+  if (api->struct_size < kRequiredPresentationApiSize) {
     throw std::invalid_argument(
-        "Native VTK ABI v2 table has an unsupported version");
+        "Native VTK presentation API v1 table is too small");
   }
-  if (api->status_clear == nullptr || api->session_create == nullptr ||
-      api->session_destroy == nullptr || api->validate_volume == nullptr ||
-      api->session_set_volume == nullptr ||
-      api->validate_render_request == nullptr ||
-      api->session_render == nullptr ||
+  if (api->version != VTK_FLUTTER_PRESENTATION_API_VERSION) {
+    throw std::invalid_argument(
+        "Native VTK presentation API v1 table has an unsupported version");
+  }
+  if (api->status_clear == nullptr ||
       api->session_attach_texture_target == nullptr ||
       api->session_detach_texture_target == nullptr ||
       api->texture_target_create == nullptr ||
       api->texture_target_destroy == nullptr) {
-    throw std::invalid_argument("Native VTK ABI v2 table is incomplete");
+    throw std::invalid_argument(
+        "Native VTK presentation API v1 table is incomplete");
   }
   return *api;
 }

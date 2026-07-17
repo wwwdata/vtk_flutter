@@ -22,7 +22,7 @@ struct PublishedFrame {
 
 class WindowsFrameTarget final {
 public:
-  VtkFlutterFrameCallbacksV2 Callbacks() noexcept;
+  VtkFlutterFrameCallbacks Callbacks() noexcept;
 
   std::shared_ptr<const PublishedFrame> LatestFrame() const;
   std::int64_t SubmittedFrameId() const;
@@ -34,16 +34,15 @@ public:
 private:
   static std::int32_t VTK_FLUTTER_CALL BeginFrameCallback(
       void *user_data, const VtkFlutterViewport *viewport,
-      VtkFlutterCpuFrameV2 *frame, VtkFlutterStatus *status) noexcept;
+      VtkFlutterCpuFrame *frame, VtkFlutterStatus *status) noexcept;
   static std::int32_t VTK_FLUTTER_CALL
-  EndFrameCallback(void *user_data, const VtkFlutterMetrics *metrics,
+  EndFrameCallback(void *user_data, const VtkFlutterFrameMetrics *metrics,
                    VtkFlutterStatus *status) noexcept;
   static void VTK_FLUTTER_CALL CancelFrameCallback(void *user_data) noexcept;
 
   std::int32_t BeginFrame(const VtkFlutterViewport &viewport,
-                          VtkFlutterCpuFrameV2 &frame,
-                          VtkFlutterStatus *status);
-  std::int32_t EndFrame(const VtkFlutterMetrics *metrics,
+                          VtkFlutterCpuFrame &frame, VtkFlutterStatus *status);
+  std::int32_t EndFrame(const VtkFlutterFrameMetrics *metrics,
                         VtkFlutterStatus *status) noexcept;
   void CancelFrame() noexcept;
 
@@ -55,7 +54,8 @@ private:
   std::atomic<std::int64_t> presented_frame_id_ = 0;
 };
 
-const VtkFlutterCoreApiV2 &ValidateCoreApiAddress(std::uintptr_t address);
+const VtkFlutterPresentationApi &
+ValidatePresentationApiAddress(std::uintptr_t address);
 
 } // namespace vtk_flutter::windows
 

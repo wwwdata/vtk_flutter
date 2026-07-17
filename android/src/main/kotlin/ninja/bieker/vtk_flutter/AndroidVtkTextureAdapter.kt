@@ -9,7 +9,6 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.roundToLong
 
 internal class AndroidVtkTextureAdapter(
     messenger: BinaryMessenger,
@@ -18,14 +17,14 @@ internal class AndroidVtkTextureAdapter(
     private val channel = MethodChannel(messenger, channelName)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "vtk-flutter-render").apply { isDaemon = true }
+        Thread(task, "vtk-flutter-presentation").apply { isDaemon = true }
     }
 
     private var textureEntry: TextureRegistry.SurfaceTextureEntry? = null
     private var surface: Surface? = null
     private var nativeHandle = 0L
     private var nativeSessionAddress = 0L
-    private var coreApiAddress = 0L
+    private var presentationApiAddress = 0L
     private var viewportWidth = 0
     private var viewportHeight = 0
     private var initializing = false
@@ -51,14 +50,12 @@ internal class AndroidVtkTextureAdapter(
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "capabilities" -> capabilities(result)
-            "createSession" -> createSession(call, result)
-            "setVolume" -> setVolume(call, result)
-            "render" -> render(call, result)
+            "createView" -> createView(call, result)
             "presentFrame" -> presentFrame(result)
             "status" -> status(result)
             "resize" -> resize(call, result)
             "recreateGraphicsContext" -> recreateGraphicsContext(result)
-            "disposeSession" -> disposeSession(result = result)
+            "disposeView" -> disposeView(result = result)
             else -> result.notImplemented()
         }
     }
@@ -66,35 +63,42 @@ internal class AndroidVtkTextureAdapter(
     private fun capabilities(result: MethodChannel.Result) {
         worker.execute {
             val available = NativeLibrary.available && !closed
-            postResult {
-                result.success(
-                    mapOf(
-                        "renderModes" to if (available) listOf(1, 2, 3) else emptyList<Int>(),
-                        "maxVolumeBytes" to if (available) maximumVolumeBytes else 0,
-                        "supportsExternalTexture" to available,
-                    ),
-                )
-            }
+            postResult { result.success(androidCapabilities(available = available)) }
         }
     }
 
-    private fun createSession(call: MethodCall, result: MethodChannel.Result) {
+    private fun createView(call: MethodCall, result: MethodChannel.Result) {
         val viewport = readViewport(call, result) ?: return
-        val address = readCoreApiAddress(call.arguments)
-        if (address == null) {
+        val presentationAddress = readPresentationApiAddress(call.arguments)
+        if (presentationAddress == null) {
             result.error(
-                "invalid_core_api",
-                "A positive VTK core API address is required",
+                "invalid_presentation_api",
+                "A positive VTK presentation API address is required",
                 null,
             )
             return
         }
-        createSession(viewport = viewport, coreApiAddress = address, result = result)
+        val sessionAddress = readNativeSessionAddress(call.arguments)
+        if (sessionAddress == null) {
+            result.error(
+                "invalid_native_session",
+                "A positive VTK native session address is required",
+                null,
+            )
+            return
+        }
+        createView(
+            viewport = viewport,
+            presentationApiAddress = presentationAddress,
+            nativeSessionAddress = sessionAddress,
+            result = result,
+        )
     }
 
-    private fun createSession(
+    private fun createView(
         viewport: Viewport,
-        coreApiAddress: Long,
+        presentationApiAddress: Long,
+        nativeSessionAddress: Long,
         result: MethodChannel.Result,
     ) {
         if (closed) {
@@ -105,23 +109,27 @@ internal class AndroidVtkTextureAdapter(
             pendingCreations.add(
                 PendingCreation(
                     viewport = viewport,
-                    coreApiAddress = coreApiAddress,
+                    presentationApiAddress = presentationApiAddress,
+                    nativeSessionAddress = nativeSessionAddress,
                     result = result,
                 ),
             )
             return
         }
         textureEntry?.let { entry ->
-            if (this.coreApiAddress != coreApiAddress || nativeSessionAddress <= 0) {
+            if (
+                this.presentationApiAddress != presentationApiAddress ||
+                this.nativeSessionAddress != nativeSessionAddress
+            ) {
                 result.error(
-                    "invalid_core_api",
-                    "The active session belongs to a different VTK core API",
+                    "invalid_state",
+                    "The active view uses a different presentation API or session",
                     null,
                 )
                 return
             }
-            resizeExistingSession(viewport = viewport, result = result) {
-                result.success(sessionResult(entry.id()))
+            resizeExistingView(viewport = viewport, result = result) {
+                result.success(viewResult(textureId = entry.id()))
             }
             return
         }
@@ -148,7 +156,8 @@ internal class AndroidVtkTextureAdapter(
                 } else {
                     initializeTexture(
                         viewport = viewport,
-                        coreApiAddress = coreApiAddress,
+                        presentationApiAddress = presentationApiAddress,
+                        nativeSessionAddress = nativeSessionAddress,
                         result = result,
                     )
                 }
@@ -158,7 +167,8 @@ internal class AndroidVtkTextureAdapter(
 
     private fun initializeTexture(
         viewport: Viewport,
-        coreApiAddress: Long,
+        presentationApiAddress: Long,
+        nativeSessionAddress: Long,
         result: MethodChannel.Result,
     ) {
         val entry = textures.createSurfaceTexture()
@@ -178,18 +188,17 @@ internal class AndroidVtkTextureAdapter(
         resetFrameState()
         worker.execute {
             try {
-                val handles = nativeCreate(
-                    coreApiAddress,
+                val handle = nativeCreate(
+                    presentationApiAddress,
+                    nativeSessionAddress,
                     renderSurface,
                     viewport.width,
                     viewport.height,
                 )
-                check(handles.size == nativeHandleCount && handles.all { it > 0L }) {
-                    "Native VTK initialization returned malformed handles"
-                }
-                nativeHandle = handles[adapterHandleIndex]
-                nativeSessionAddress = handles[sessionAddressIndex]
-                this.coreApiAddress = coreApiAddress
+                check(handle > 0L) { "Native VTK initialization returned an invalid view handle" }
+                nativeHandle = handle
+                this.presentationApiAddress = presentationApiAddress
+                this.nativeSessionAddress = nativeSessionAddress
                 postResult {
                     initializing = false
                     if (closed || disposing) {
@@ -197,7 +206,7 @@ internal class AndroidVtkTextureAdapter(
                     } else {
                         ready = true
                         graphicsContextGeneration.set(1)
-                        result.success(sessionResult(entry.id()))
+                        result.success(viewResult(textureId = entry.id()))
                     }
                     if (!disposing) drainPendingCreations()
                 }
@@ -209,76 +218,6 @@ internal class AndroidVtkTextureAdapter(
                     if (!disposing) drainPendingCreations()
                 }
             }
-        }
-    }
-
-    private fun setVolume(call: MethodCall, result: MethodChannel.Result) {
-        val arguments = call.arguments as? Map<*, *>
-        val voxels = arguments?.get("voxels") as? ByteArray
-        val width = (arguments?.get("width") as? Number)?.toInt()
-        val height = (arguments?.get("height") as? Number)?.toInt()
-        val depth = (arguments?.get("depth") as? Number)?.toInt()
-        val indexToPatient = arguments?.get("indexToPatient") as? DoubleArray
-        val expectedBytes = if (width != null && height != null && depth != null) {
-            width.toLong() * height.toLong() * depth.toLong() * bytesPerVoxel
-        } else {
-            -1
-        }
-        if (
-            voxels == null || width == null || height == null || depth == null ||
-            width <= 0 || height <= 0 || depth <= 0 ||
-            width > maximumVolumeDimension || height > maximumVolumeDimension ||
-            depth > maximumVolumeDimension ||
-            expectedBytes != voxels.size.toLong() || expectedBytes > maximumVolumeBytes ||
-            indexToPatient?.size != affineElementCount
-        ) {
-            result.error(
-                "invalid_volume",
-                "Expected bounded signed-int16 voxel bytes, dimensions, and a Float64 affine",
-                null,
-            )
-            return
-        }
-        submitNative(result = result, errorCode = "vtk_volume_failed") { handle ->
-            nativeSetVolume(handle, voxels, width, height, depth, indexToPatient)
-            null
-        }
-    }
-
-    private fun render(call: MethodCall, result: MethodChannel.Result) {
-        val arguments = call.arguments as? Map<*, *>
-        val mode = (arguments?.get("mode") as? Number)?.toInt() ?: -1
-        val origin = arguments?.get("planeOrigin") as? DoubleArray ?: zeroVector
-        val normal = arguments?.get("planeNormal") as? DoubleArray ?: defaultNormal
-        if (mode !in 1..3 || origin.size != vectorElementCount || normal.size != vectorElementCount) {
-            result.error(
-                "invalid_render_request",
-                "Expected a supported mode and three-value plane vectors",
-                null,
-            )
-            return
-        }
-        val windowCenter = (arguments?.get("windowCenter") as? Number)?.toDouble() ?: 350.0
-        val windowWidth = (arguments?.get("windowWidth") as? Number)?.toDouble() ?: 1800.0
-        val azimuth = (arguments?.get("cameraAzimuthDegrees") as? Number)?.toDouble() ?: 0.0
-        val elevation = (arguments?.get("cameraElevationDegrees") as? Number)?.toDouble() ?: 0.0
-        val zoom = (arguments?.get("cameraZoom") as? Number)?.toDouble() ?: 1.0
-        submitNative(result = result, errorCode = "vtk_render_failed") { handle ->
-            val frameId = submittedFrameId.incrementAndGet()
-            val metrics = nativeRender(
-                handle,
-                mode,
-                viewportWidth,
-                viewportHeight,
-                windowCenter,
-                windowWidth,
-                origin,
-                normal,
-                azimuth,
-                elevation,
-                zoom,
-            )
-            buildFrameMetrics(metrics = metrics, frameId = frameId)
         }
     }
 
@@ -297,35 +236,6 @@ internal class AndroidVtkTextureAdapter(
                 "handoffMode" to handoffMode,
             ),
         )
-    }
-
-    private fun buildFrameMetrics(metrics: DoubleArray, frameId: Long): Map<String, Any> {
-        check(metrics.size == nativeMetricCount) { "Native VTK returned malformed metrics" }
-        val values = mutableMapOf<String, Any>(
-            "textureId" to (textureEntry?.id() ?: -1L),
-            "width" to metrics[metricFrameWidth].roundToLong(),
-            "height" to metrics[metricFrameHeight].roundToLong(),
-            "volumeBytes" to metrics[metricVolumeBytes].roundToLong(),
-            "frameBytes" to metrics[metricFrameBytes].roundToLong(),
-            "residentBytes" to (
-                metrics[metricVolumeBytes] + metrics[metricSurfaceAllocationBytes]
-            ).roundToLong(),
-            "renderUs" to metrics[metricRenderMilliseconds].millisecondsToMicroseconds(),
-            "blitSubmitUs" to metrics[metricSubmitMilliseconds].millisecondsToMicroseconds(),
-            "gpuSyncWaitUs" to metrics[metricGpuWaitMilliseconds].millisecondsToMicroseconds(),
-            "readbackUs" to metrics[metricReadbackMilliseconds].millisecondsToMicroseconds(),
-            "frameId" to frameId,
-            "presentedFrameCount" to presentedFrameCount.get(),
-            "presentedFrameId" to presentedFrameId.get(),
-            "graphicsContextGeneration" to graphicsContextGeneration.get(),
-            "handoffMode" to handoffMode,
-        )
-        if (metrics[metricPatientToClipValid] != 0.0) {
-            values["patientToClip"] = metrics
-                .copyOfRange(metricPatientToClipStart, nativeMetricCount)
-                .toList()
-        }
-        return values
     }
 
     private fun status(result: MethodChannel.Result) {
@@ -347,10 +257,10 @@ internal class AndroidVtkTextureAdapter(
 
     private fun resize(call: MethodCall, result: MethodChannel.Result) {
         val viewport = readViewport(call, result) ?: return
-        resizeExistingSession(viewport = viewport, result = result) { result.success(null) }
+        resizeExistingView(viewport = viewport, result = result) { result.success(null) }
     }
 
-    private fun resizeExistingSession(
+    private fun resizeExistingView(
         viewport: Viewport,
         result: MethodChannel.Result,
         completion: () -> Unit,
@@ -361,7 +271,7 @@ internal class AndroidVtkTextureAdapter(
         }
         val entry = textureEntry
         submitNative(result = result, errorCode = "vtk_resize_failed") { handle ->
-            check(entry != null) { "Create a VTK session before resizing it" }
+            check(entry != null) { "Create a VTK view before resizing it" }
             entry.surfaceTexture().setDefaultBufferSize(viewport.width, viewport.height)
             nativeResize(handle, viewport.width, viewport.height)
             viewportWidth = viewport.width
@@ -374,7 +284,7 @@ internal class AndroidVtkTextureAdapter(
     private fun recreateGraphicsContext(result: MethodChannel.Result) {
         val renderSurface = surface
         submitNative(result = result, errorCode = "vtk_context_failed") { handle ->
-            check(renderSurface != null) { "Create a VTK session before recreating its context" }
+            check(renderSurface != null) { "Create a VTK view before recreating its context" }
             nativeRecreateGraphicsContext(handle, renderSurface, viewportWidth, viewportHeight)
             val generation = graphicsContextGeneration.incrementAndGet()
             mapOf("graphicsContextGeneration" to generation)
@@ -417,7 +327,7 @@ internal class AndroidVtkTextureAdapter(
         worker.execute {
             try {
                 val handle = nativeHandle
-                check(handle != 0L && ready) { "Create a VTK session before using it" }
+                check(handle != 0L && ready) { "Create a VTK view before using it" }
                 val value = operation(handle)
                 if (value !== noResult) postResult { result.success(value) }
             } catch (error: Throwable) {
@@ -426,7 +336,7 @@ internal class AndroidVtkTextureAdapter(
         }
     }
 
-    private fun disposeSession(
+    private fun disposeView(
         result: MethodChannel.Result? = null,
         shutDownWorker: Boolean = false,
     ) {
@@ -442,26 +352,43 @@ internal class AndroidVtkTextureAdapter(
         ready = false
         pendingTextureUnregistrations = if (textureEntry == null) 0 else 1
         worker.execute {
+            var failure: Throwable? = null
             try {
                 val handle = nativeHandle
-                nativeHandle = 0
                 if (handle != 0L) nativeDestroy(handle)
-            } finally {
-                postResult {
-                    releaseTexture()
-                    disposing = false
-                    initializing = false
-                    completeDisposal()
+                nativeHandle = 0L
+            } catch (error: Throwable) {
+                failure = error
+            }
+            postResult {
+                val disposalFailure = failure
+                if (disposalFailure == null) releaseTexture()
+                disposing = false
+                initializing = false
+                completeDisposal(disposalFailure)
+                if (disposalFailure == null) {
                     drainPendingCreations()
+                } else {
+                    failPendingCreations(disposalFailure)
                 }
             }
         }
     }
 
-    private fun completeDisposal() {
+    private fun completeDisposal(failure: Throwable? = null) {
         val completions = pendingDisposals.toList()
         pendingDisposals.clear()
-        completions.forEach { it.success(null) }
+        completions.forEach { completion ->
+            if (failure == null) {
+                completion.success(null)
+            } else {
+                completion.error(
+                    "vtk_dispose_failed",
+                    failure.message ?: failure.toString(),
+                    null,
+                )
+            }
+        }
         if (shutDownWorkerAfterDispose) worker.shutdown()
     }
 
@@ -473,12 +400,25 @@ internal class AndroidVtkTextureAdapter(
             if (closed) {
                 creation.result.disposedError()
             } else {
-                createSession(
+                createView(
                     viewport = creation.viewport,
-                    coreApiAddress = creation.coreApiAddress,
+                    presentationApiAddress = creation.presentationApiAddress,
+                    nativeSessionAddress = creation.nativeSessionAddress,
                     result = creation.result,
                 )
             }
+        }
+    }
+
+    private fun failPendingCreations(failure: Throwable) {
+        val pending = pendingCreations.toList()
+        pendingCreations.clear()
+        pending.forEach { creation ->
+            creation.result.error(
+                "vtk_dispose_failed",
+                failure.message ?: failure.toString(),
+                null,
+            )
         }
     }
 
@@ -486,7 +426,7 @@ internal class AndroidVtkTextureAdapter(
         channel.setMethodCallHandler(null)
         if (closed) return
         closed = true
-        disposeSession(shutDownWorker = true)
+        disposeView(shutDownWorker = true)
     }
 
     private fun releaseTexture() {
@@ -498,7 +438,7 @@ internal class AndroidVtkTextureAdapter(
         viewportWidth = 0
         viewportHeight = 0
         nativeSessionAddress = 0
-        coreApiAddress = 0
+        presentationApiAddress = 0
         ready = false
         pendingTextureUnregistrations = 0
         graphicsContextGeneration.set(0)
@@ -515,40 +455,13 @@ internal class AndroidVtkTextureAdapter(
         mainHandler.post(completion)
     }
 
-    private fun sessionResult(textureId: Long) = mapOf(
-        "textureId" to textureId,
-        "nativeSessionAddress" to nativeSessionAddress,
-    )
-
     private external fun nativeCreate(
-        coreApiAddress: Long,
+        presentationApiAddress: Long,
+        nativeSessionAddress: Long,
         surface: Surface,
         width: Int,
         height: Int,
-    ): LongArray
-
-    private external fun nativeSetVolume(
-        handle: Long,
-        voxels: ByteArray,
-        width: Int,
-        height: Int,
-        depth: Int,
-        indexToPatient: DoubleArray,
-    )
-
-    private external fun nativeRender(
-        handle: Long,
-        mode: Int,
-        width: Int,
-        height: Int,
-        windowCenter: Double,
-        windowWidth: Double,
-        planeOrigin: DoubleArray,
-        planeNormal: DoubleArray,
-        cameraAzimuthDegrees: Double,
-        cameraElevationDegrees: Double,
-        cameraZoom: Double,
-    ): DoubleArray
+    ): Long
 
     private external fun nativeResize(handle: Long, width: Int, height: Int)
 
@@ -565,7 +478,8 @@ internal class AndroidVtkTextureAdapter(
 
     private data class PendingCreation(
         val viewport: Viewport,
-        val coreApiAddress: Long,
+        val presentationApiAddress: Long,
+        val nativeSessionAddress: Long,
         val result: MethodChannel.Result,
     )
 
@@ -580,41 +494,33 @@ internal class AndroidVtkTextureAdapter(
 
     private companion object {
         const val channelName = "vtk_flutter/session"
-        const val maximumVolumeBytes = 256 * 1024 * 1024
         const val maximumFrameBytes = 256 * 1024 * 1024
-        const val maximumVolumeDimension = 4096
         const val maximumViewportDimension = 8192
-        const val bytesPerVoxel = 2L
         const val bytesPerPixel = 4L
-        const val affineElementCount = 16
-        const val vectorElementCount = 3
-        const val nativeMetricCount = 26
-        const val metricVolumeBytes = 0
-        const val metricFrameBytes = 1
-        const val metricSurfaceAllocationBytes = 2
-        const val metricRenderMilliseconds = 3
-        const val metricSubmitMilliseconds = 4
-        const val metricGpuWaitMilliseconds = 5
-        const val metricReadbackMilliseconds = 6
-        const val metricFrameWidth = 7
-        const val metricFrameHeight = 8
-        const val metricPatientToClipValid = 9
-        const val metricPatientToClipStart = 10
-        const val nativeHandleCount = 2
-        const val adapterHandleIndex = 0
-        const val sessionAddressIndex = 1
         const val graphicsSupport = "CPU RGBA / ANativeWindow SurfaceTexture"
         const val handoffMode = "surface_texture_cpu_rgba"
-        val zeroVector = doubleArrayOf(0.0, 0.0, 0.0)
-        val defaultNormal = doubleArrayOf(0.0, 0.0, 1.0)
         val noResult = Any()
     }
 }
 
-private fun Double.millisecondsToMicroseconds(): Long = (this * 1_000.0).roundToLong()
+internal fun androidCapabilities(available: Boolean): Map<String, Any> = mapOf(
+    "backend" to "android",
+    "version" to 1,
+    "maxUploadBytes" to if (available) 256 * 1024 * 1024 else 0,
+    "supportsExternalTexture" to available,
+)
 
-internal fun readCoreApiAddress(arguments: Any?): Long? {
-    val value = (arguments as? Map<*, *>)?.get("coreApiAddress")
+internal fun viewResult(textureId: Long): Map<String, Long> =
+    mapOf("textureId" to textureId)
+
+internal fun readPresentationApiAddress(arguments: Any?): Long? =
+    readPositiveAddress(arguments = arguments, key = "presentationApiAddress")
+
+internal fun readNativeSessionAddress(arguments: Any?): Long? =
+    readPositiveAddress(arguments = arguments, key = "nativeSessionAddress")
+
+private fun readPositiveAddress(arguments: Any?, key: String): Long? {
+    val value = (arguments as? Map<*, *>)?.get(key)
     val address = when (value) {
         is Byte -> value.toLong()
         is Short -> value.toLong()
@@ -626,5 +532,5 @@ internal fun readCoreApiAddress(arguments: Any?): Long? {
 }
 
 private fun MethodChannel.Result.disposedError() {
-    error("vtk_disposed", "The Android VTK session is disposed", null)
+    error("vtk_disposed", "The Android VTK view is disposed", null)
 }

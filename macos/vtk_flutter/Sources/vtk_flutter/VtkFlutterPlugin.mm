@@ -3,7 +3,6 @@
 
 #import <CoreVideo/CoreVideo.h>
 
-#include <cmath>
 #include <cstdio>
 #include <cstdint>
 
@@ -24,6 +23,8 @@ FlutterError* StatusError(NSString* operation,
     errorCode = @"invalid_argument";
   } else if (code == VTK_FLUTTER_STATUS_INVALID_STATE) {
     errorCode = @"invalid_state";
+  } else if (code == VTK_FLUTTER_STATUS_NOT_SUPPORTED) {
+    errorCode = @"not_supported";
   } else if (code == VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE) {
     errorCode = @"render_target_unavailable";
   }
@@ -89,16 +90,17 @@ FlutterError* StatusError(NSString* operation,
 @interface VtkFlutterPlugin ()
 - (instancetype)initWithRegistrar:(id<FlutterPluginRegistrar>)registrar;
 - (int32_t)beginFrame:(const VtkFlutterViewport*)viewport
-                frame:(VtkFlutterCpuFrameV2*)frame
+                frame:(VtkFlutterCpuFrame*)frame
                status:(VtkFlutterStatus*)status;
-- (int32_t)endFrame:(const VtkFlutterMetrics*)metrics
+- (int32_t)endFrame:(const VtkFlutterFrameMetrics*)metrics
               status:(VtkFlutterStatus*)status;
 - (void)cancelFrame;
+- (FlutterError*)disposeView;
 @end
 
 static int32_t VtkFlutterBeginFrame(void* userData,
                                     const VtkFlutterViewport* viewport,
-                                    VtkFlutterCpuFrameV2* frame,
+                                    VtkFlutterCpuFrame* frame,
                                     VtkFlutterStatus* status) {
   @autoreleasepool {
     VtkFlutterPlugin* plugin = (__bridge VtkFlutterPlugin*)userData;
@@ -112,7 +114,7 @@ static int32_t VtkFlutterBeginFrame(void* userData,
 }
 
 static int32_t VtkFlutterEndFrame(void* userData,
-                                  const VtkFlutterMetrics* metrics,
+                                  const VtkFlutterFrameMetrics* metrics,
                                   VtkFlutterStatus* status) {
   @autoreleasepool {
     VtkFlutterPlugin* plugin = (__bridge VtkFlutterPlugin*)userData;
@@ -136,7 +138,7 @@ static void VtkFlutterCancelFrame(void* userData) {
   id<FlutterPluginRegistrar> _registrar;
   VtkFlutterExternalTexture* _texture;
   int64_t _textureId;
-  const VtkFlutterCoreApiV2* _coreApi;
+  const VtkFlutterPresentationApi* _presentationApi;
   VtkFlutterSession* _session;
   VtkFlutterTextureTarget* _textureTarget;
   VtkFlutterViewport _viewport;
@@ -173,12 +175,8 @@ static void VtkFlutterCancelFrame(void* userData) {
 - (void)handleMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result {
   if ([call.method isEqualToString:@"capabilities"]) {
     result(VtkFlutterCapabilitiesMap());
-  } else if ([call.method isEqualToString:@"createSession"]) {
-    [self createSession:call.arguments result:result];
-  } else if ([call.method isEqualToString:@"setVolume"]) {
-    [self setVolume:call.arguments result:result];
-  } else if ([call.method isEqualToString:@"render"]) {
-    [self render:call.arguments result:result];
+  } else if ([call.method isEqualToString:@"createView"]) {
+    [self createView:call.arguments result:result];
   } else if ([call.method isEqualToString:@"presentFrame"]) {
     [self presentFrame:result];
   } else if ([call.method isEqualToString:@"status"]) {
@@ -187,54 +185,57 @@ static void VtkFlutterCancelFrame(void* userData) {
     [self resize:call.arguments result:result];
   } else if ([call.method isEqualToString:@"recreateGraphicsContext"]) {
     [self recreateGraphicsContext:result];
-  } else if ([call.method isEqualToString:@"disposeSession"]) {
-    [self disposeSession];
-    result(nil);
+  } else if ([call.method isEqualToString:@"disposeView"]) {
+    FlutterError* error = [self disposeView];
+    result(error);
   } else {
     result(FlutterMethodNotImplemented);
   }
 }
 
-- (void)createSession:(id)arguments result:(FlutterResult)result {
+- (void)createView:(id)arguments result:(FlutterResult)result {
   NSString* message = nil;
   VtkFlutterViewport viewport{};
   if (!VtkFlutterDecodeViewport(arguments, &viewport, &message)) {
     result([FlutterError errorWithCode:@"invalid_viewport" message:message details:nil]);
     return;
   }
-  const VtkFlutterCoreApiV2* coreApi = nullptr;
-  if (!VtkFlutterDecodeCoreApi(arguments, &coreApi, &message)) {
-    result([FlutterError errorWithCode:@"invalid_core_api" message:message details:nil]);
+  const VtkFlutterPresentationApi* presentationApi = nullptr;
+  if (!VtkFlutterDecodePresentationApi(arguments, &presentationApi, &message)) {
+    result([FlutterError errorWithCode:@"invalid_presentation_api"
+                               message:message
+                               details:nil]);
+    return;
+  }
+  VtkFlutterSession* session = nullptr;
+  if (!VtkFlutterDecodeNativeSession(arguments, &session, &message)) {
+    result([FlutterError errorWithCode:@"invalid_native_session"
+                               message:message
+                               details:nil]);
     return;
   }
   if (_session != nullptr) {
-    if (_coreApi != coreApi) {
+    if (_presentationApi != presentationApi || _session != session) {
       result([FlutterError errorWithCode:@"invalid_state"
-                                 message:@"The active session uses a different core API table"
+                                 message:@"The active view uses a different presentation API or session"
+                                 details:nil]);
+      return;
+    }
+    if (_textureId <= 0) {
+      result([FlutterError errorWithCode:@"invalid_state"
+                                 message:@"Dispose the incomplete macOS VTK view before retrying"
                                  details:nil]);
       return;
     }
     _viewport = viewport;
-    result(@{
-      @"textureId" : @(_textureId),
-      @"nativeSessionAddress" : @(
-          static_cast<uint64_t>(reinterpret_cast<uintptr_t>(_session)))
-    });
+    result(@{@"textureId" : @(_textureId)});
     return;
   }
 
   VtkFlutterExternalTexture* texture = [[VtkFlutterExternalTexture alloc] init];
-  int64_t textureId = [_registrar.textures registerTexture:texture];
-  if (textureId <= 0) {
-    result([FlutterError errorWithCode:@"vtk_create_failed"
-                               message:@"Flutter rejected the macOS external texture"
-                               details:nil]);
-    return;
-  }
-
-  VtkFlutterFrameCallbacksV2 callbacks{
-      .struct_size = sizeof(VtkFlutterFrameCallbacksV2),
-      .version = VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2,
+  VtkFlutterFrameCallbacks callbacks{
+      .struct_size = sizeof(VtkFlutterFrameCallbacks),
+      .version = VTK_FLUTTER_FRAME_CALLBACKS_VERSION,
       .user_data = (__bridge void*)self,
       .begin_frame = VtkFlutterBeginFrame,
       .end_frame = VtkFlutterEndFrame,
@@ -242,36 +243,59 @@ static void VtkFlutterCancelFrame(void* userData) {
   };
   VtkFlutterStatus status{};
   VtkFlutterTextureTarget* textureTarget = nullptr;
-  int32_t code = coreApi->texture_target_create(&callbacks, &textureTarget, &status);
+  int32_t code =
+      presentationApi->texture_target_create(&callbacks, &textureTarget, &status);
   if (code != VTK_FLUTTER_STATUS_OK) {
-    [_registrar.textures unregisterTexture:textureId];
     result(StatusError(@"create texture target", code, status));
     return;
   }
-
-  VtkFlutterSession* session = nullptr;
-  status = {};
-  code = coreApi->session_create(&session, &status);
-  if (code != VTK_FLUTTER_STATUS_OK) {
-    VtkFlutterStatus destroyStatus{};
-    coreApi->texture_target_destroy(textureTarget, &destroyStatus);
-    [_registrar.textures unregisterTexture:textureId];
-    result(StatusError(@"create session", code, status));
+  if (textureTarget == nullptr) {
+    result([FlutterError errorWithCode:@"invalid_state"
+                               message:@"Native VTK created no macOS texture target"
+                               details:nil]);
     return;
   }
 
   status = {};
-  code = coreApi->session_attach_texture_target(session, textureTarget, &status);
+  code = presentationApi->session_attach_texture_target(session, textureTarget,
+                                                         &status);
   if (code != VTK_FLUTTER_STATUS_OK) {
-    coreApi->session_destroy(session);
     VtkFlutterStatus destroyStatus{};
-    coreApi->texture_target_destroy(textureTarget, &destroyStatus);
-    [_registrar.textures unregisterTexture:textureId];
+    presentationApi->texture_target_destroy(textureTarget, &destroyStatus);
     result(StatusError(@"attach texture target", code, status));
     return;
   }
 
-  _coreApi = coreApi;
+  int64_t textureId = [_registrar.textures registerTexture:texture];
+  if (textureId <= 0) {
+    VtkFlutterStatus detachStatus{};
+    code = presentationApi->session_detach_texture_target(
+        session, textureTarget, &detachStatus);
+    if (code != VTK_FLUTTER_STATUS_OK) {
+      _presentationApi = presentationApi;
+      _session = session;
+      _textureTarget = textureTarget;
+      _texture = texture;
+      _viewport = viewport;
+      result(StatusError(@"roll back texture target attachment", code,
+                         detachStatus));
+      return;
+    }
+    VtkFlutterStatus destroyStatus{};
+    code = presentationApi->texture_target_destroy(textureTarget,
+                                                    &destroyStatus);
+    if (code != VTK_FLUTTER_STATUS_OK) {
+      result(StatusError(@"destroy unregistered texture target", code,
+                         destroyStatus));
+      return;
+    }
+    result([FlutterError errorWithCode:@"vtk_create_failed"
+                               message:@"Flutter rejected the macOS external texture"
+                               details:nil]);
+    return;
+  }
+
+  _presentationApi = presentationApi;
   _session = session;
   _textureTarget = textureTarget;
   _texture = texture;
@@ -279,89 +303,7 @@ static void VtkFlutterCancelFrame(void* userData) {
   _viewport = viewport;
   _frameId = 0;
   _graphicsContextGeneration = 1;
-  result(@{
-    @"textureId" : @(_textureId),
-    @"nativeSessionAddress" : @(
-        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(_session)))
-  });
-}
-
-- (void)setVolume:(id)arguments result:(FlutterResult)result {
-  if (_session == nullptr || _coreApi == nullptr) {
-    result([FlutterError errorWithCode:@"vtk_not_initialized"
-                               message:@"Create a VTK session before uploading a volume"
-                               details:nil]);
-    return;
-  }
-  NSString* message = nil;
-  VtkFlutterVolume volume{};
-  if (!VtkFlutterDecodeVolume(arguments, &volume, &message)) {
-    result([FlutterError errorWithCode:@"invalid_volume" message:message details:nil]);
-    return;
-  }
-  VtkFlutterStatus status{};
-  int32_t code = _coreApi->session_set_volume(_session, &volume, &status);
-  if (code != VTK_FLUTTER_STATUS_OK) {
-    result(StatusError(@"setVolume", code, status));
-    return;
-  }
-  result(nil);
-}
-
-- (void)render:(id)arguments result:(FlutterResult)result {
-  if (_session == nullptr || _coreApi == nullptr || _texture == nil ||
-      _textureTarget == nullptr) {
-    result([FlutterError errorWithCode:@"vtk_not_initialized"
-                               message:@"Create a VTK session before rendering"
-                               details:nil]);
-    return;
-  }
-  NSString* message = nil;
-  VtkFlutterRenderRequest request{};
-  if (!VtkFlutterDecodeRenderRequest(arguments, _viewport, &request, &message)) {
-    result([FlutterError errorWithCode:@"invalid_render_request"
-                               message:message
-                               details:nil]);
-    return;
-  }
-  VtkFlutterMetrics metrics{};
-  VtkFlutterStatus status{};
-  int32_t code = _coreApi->session_render(_session, &request, &metrics, &status);
-  if (code != VTK_FLUTTER_STATUS_OK) {
-    result(StatusError(@"render", code, status));
-    return;
-  }
-  if (![self publishCompletedFrame]) {
-    result([FlutterError errorWithCode:@"vtk_render_failed"
-                               message:@"VTK produced no macOS pixel buffer"
-                               details:nil]);
-    return;
-  }
-  NSMutableDictionary* response = [@{
-    @"textureId" : @(_textureId),
-    @"width" : @(metrics.frame_width),
-    @"height" : @(metrics.frame_height),
-    @"volumeBytes" : @(metrics.volume_bytes),
-    @"frameBytes" : @(metrics.frame_bytes),
-    @"residentBytes" : @(metrics.surface_allocation_bytes),
-    @"renderUs" : @(llround(metrics.render_ms * 1000.0)),
-    @"blitSubmitUs" : @(llround(metrics.surface_submit_ms * 1000.0)),
-    @"gpuSyncWaitUs" : @(llround(metrics.gpu_sync_wait_ms * 1000.0)),
-    @"readbackUs" : @(llround(metrics.cpu_readback_ms * 1000.0)),
-    @"frameId" : @(_frameId),
-    @"presentedFrameCount" : @(_texture.presentedFrameCount),
-    @"presentedFrameId" : @(_texture.presentedFrameId),
-    @"graphicsContextGeneration" : @(_graphicsContextGeneration),
-    @"handoffMode" : [NSString stringWithUTF8String:kHandoffMode],
-  } mutableCopy];
-  if (metrics.patient_to_clip_valid != 0) {
-    NSMutableArray<NSNumber*>* matrix = [NSMutableArray arrayWithCapacity:16];
-    for (int index = 0; index < 16; ++index) {
-      [matrix addObject:@(metrics.patient_to_clip[index])];
-    }
-    response[@"patientToClip"] = matrix;
-  }
-  result(response);
+  result(@{@"textureId" : @(_textureId)});
 }
 
 - (BOOL)publishCompletedFrame {
@@ -381,7 +323,7 @@ static void VtkFlutterCancelFrame(void* userData) {
 - (void)presentFrame:(FlutterResult)result {
   if (_session == nullptr || _texture == nil || _textureTarget == nullptr) {
     result([FlutterError errorWithCode:@"vtk_not_initialized"
-                               message:@"Create a VTK session before presenting"
+                               message:@"Create a VTK view before presenting"
                                details:nil]);
     return;
   }
@@ -413,14 +355,14 @@ static void VtkFlutterCancelFrame(void* userData) {
     @"presentedFrameCount" : @(_texture.presentedFrameCount),
     @"presentedFrameId" : @(_texture.presentedFrameId),
     @"graphicsContextGeneration" : @(_graphicsContextGeneration),
-    @"graphicsSupport" : @"Core-owned VTK with BGRA CVPixelBuffer (macOS)",
+    @"graphicsSupport" : @"BGRA CVPixelBuffer external texture (macOS)",
   };
 }
 
 - (void)resize:(id)arguments result:(FlutterResult)result {
   if (_session == nullptr) {
     result([FlutterError errorWithCode:@"vtk_not_initialized"
-                               message:@"Create a VTK session before resizing"
+                               message:@"Create a VTK view before resizing"
                                details:nil]);
     return;
   }
@@ -434,10 +376,10 @@ static void VtkFlutterCancelFrame(void* userData) {
   result(nil);
 }
 
-- (VtkFlutterFrameCallbacksV2)frameCallbacks {
-  return VtkFlutterFrameCallbacksV2{
-      .struct_size = sizeof(VtkFlutterFrameCallbacksV2),
-      .version = VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2,
+- (VtkFlutterFrameCallbacks)frameCallbacks {
+  return VtkFlutterFrameCallbacks{
+      .struct_size = sizeof(VtkFlutterFrameCallbacks),
+      .version = VTK_FLUTTER_FRAME_CALLBACKS_VERSION,
       .user_data = (__bridge void*)self,
       .begin_frame = VtkFlutterBeginFrame,
       .end_frame = VtkFlutterEndFrame,
@@ -446,42 +388,53 @@ static void VtkFlutterCancelFrame(void* userData) {
 }
 
 - (void)recreateGraphicsContext:(FlutterResult)result {
-  if (_session == nullptr || _coreApi == nullptr || _textureTarget == nullptr) {
+  if (_session == nullptr || _presentationApi == nullptr ||
+      _textureTarget == nullptr) {
     result([FlutterError errorWithCode:@"vtk_not_initialized"
-                               message:@"Create a VTK session before recreating graphics"
+                               message:@"Create a VTK view before recreating graphics"
                                details:nil]);
     return;
   }
-  VtkFlutterFrameCallbacksV2 callbacks = [self frameCallbacks];
+  VtkFlutterFrameCallbacks callbacks = [self frameCallbacks];
   VtkFlutterStatus status{};
   VtkFlutterTextureTarget* newTarget = nullptr;
-  int32_t code = _coreApi->texture_target_create(&callbacks, &newTarget, &status);
+  int32_t code =
+      _presentationApi->texture_target_create(&callbacks, &newTarget, &status);
   if (code != VTK_FLUTTER_STATUS_OK) {
     result(StatusError(@"recreate texture target", code, status));
     return;
   }
+  if (newTarget == nullptr) {
+    result([FlutterError errorWithCode:@"invalid_state"
+                               message:@"Native VTK recreated no macOS texture target"
+                               details:nil]);
+    return;
+  }
   status = {};
-  code = _coreApi->session_detach_texture_target(_session, _textureTarget, &status);
+  code = _presentationApi->session_detach_texture_target(
+      _session, _textureTarget, &status);
   if (code != VTK_FLUTTER_STATUS_OK) {
     VtkFlutterStatus destroyStatus{};
-    _coreApi->texture_target_destroy(newTarget, &destroyStatus);
+    _presentationApi->texture_target_destroy(newTarget, &destroyStatus);
     result(StatusError(@"detach texture target", code, status));
     return;
   }
   status = {};
-  code = _coreApi->session_attach_texture_target(_session, newTarget, &status);
+  code = _presentationApi->session_attach_texture_target(_session, newTarget,
+                                                          &status);
   if (code != VTK_FLUTTER_STATUS_OK) {
     VtkFlutterStatus restoreStatus{};
-    _coreApi->session_attach_texture_target(_session, _textureTarget, &restoreStatus);
+    _presentationApi->session_attach_texture_target(
+        _session, _textureTarget, &restoreStatus);
     VtkFlutterStatus destroyStatus{};
-    _coreApi->texture_target_destroy(newTarget, &destroyStatus);
+    _presentationApi->texture_target_destroy(newTarget, &destroyStatus);
     result(StatusError(@"attach recreated texture target", code, status));
     return;
   }
   VtkFlutterTextureTarget* oldTarget = _textureTarget;
   _textureTarget = newTarget;
   VtkFlutterStatus destroyStatus{};
-  code = _coreApi->texture_target_destroy(oldTarget, &destroyStatus);
+  code = _presentationApi->texture_target_destroy(oldTarget, &destroyStatus);
   if (code != VTK_FLUTTER_STATUS_OK) {
     result(StatusError(@"destroy replaced texture target", code, destroyStatus));
     return;
@@ -491,7 +444,7 @@ static void VtkFlutterCancelFrame(void* userData) {
 }
 
 - (int32_t)beginFrame:(const VtkFlutterViewport*)viewport
-                frame:(VtkFlutterCpuFrameV2*)frame
+                frame:(VtkFlutterCpuFrame*)frame
                status:(VtkFlutterStatus*)status {
   @synchronized(self) {
     if (viewport == nullptr || frame == nullptr || viewport->width <= 0 ||
@@ -538,7 +491,7 @@ static void VtkFlutterCancelFrame(void* userData) {
                                            &pixelBuffer);
     if (createResult != kCVReturnSuccess || pixelBuffer == nullptr) {
       SetStatus(status, VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
-                "Could not acquire an macOS pixel buffer");
+                "Could not acquire a macOS pixel buffer");
       return VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE;
     }
     CVReturn lockResult = CVPixelBufferLockBaseAddress(pixelBuffer, 0);
@@ -551,9 +504,9 @@ static void VtkFlutterCancelFrame(void* userData) {
 
     _inProgressPixelBuffer = pixelBuffer;
     _frameLocked = YES;
-    *frame = VtkFlutterCpuFrameV2{
-        .struct_size = sizeof(VtkFlutterCpuFrameV2),
-        .version = VTK_FLUTTER_CPU_FRAME_VERSION_2,
+    *frame = VtkFlutterCpuFrame{
+        .struct_size = sizeof(VtkFlutterCpuFrame),
+        .version = VTK_FLUTTER_CPU_FRAME_VERSION,
         .pixels = static_cast<uint8_t*>(CVPixelBufferGetBaseAddress(pixelBuffer)),
         .capacity_bytes = CVPixelBufferGetDataSize(pixelBuffer),
         .row_bytes = CVPixelBufferGetBytesPerRow(pixelBuffer),
@@ -563,7 +516,7 @@ static void VtkFlutterCancelFrame(void* userData) {
   }
 }
 
-- (int32_t)endFrame:(const VtkFlutterMetrics*)metrics
+- (int32_t)endFrame:(const VtkFlutterFrameMetrics*)metrics
               status:(VtkFlutterStatus*)status {
   static_cast<void>(metrics);
   @synchronized(self) {
@@ -616,26 +569,28 @@ static void VtkFlutterCancelFrame(void* userData) {
   }
 }
 
-- (void)disposeSession {
-  if (_coreApi != nullptr && _session != nullptr && _textureTarget != nullptr) {
+- (FlutterError*)disposeView {
+  if (_presentationApi != nullptr && _session != nullptr &&
+      _textureTarget != nullptr) {
     VtkFlutterStatus status{};
-    int32_t code =
-        _coreApi->session_detach_texture_target(_session, _textureTarget, &status);
+    int32_t code = _presentationApi->session_detach_texture_target(
+        _session, _textureTarget, &status);
     if (code != VTK_FLUTTER_STATUS_OK) {
-      _coreApi->session_destroy(_session);
-      _session = nullptr;
+      return StatusError(@"detach texture target", code, status);
     }
   }
-  if (_coreApi != nullptr && _textureTarget != nullptr) {
+  FlutterError* error = nil;
+  if (_presentationApi != nullptr && _textureTarget != nullptr) {
     VtkFlutterStatus destroyStatus{};
-    _coreApi->texture_target_destroy(_textureTarget, &destroyStatus);
-  }
-  if (_coreApi != nullptr && _session != nullptr) {
-    _coreApi->session_destroy(_session);
+    int32_t code =
+        _presentationApi->texture_target_destroy(_textureTarget, &destroyStatus);
+    if (code != VTK_FLUTTER_STATUS_OK) {
+      error = StatusError(@"destroy texture target", code, destroyStatus);
+    }
   }
   _session = nullptr;
   _textureTarget = nullptr;
-  _coreApi = nullptr;
+  _presentationApi = nullptr;
   [self clearFrameStorage];
   if (_textureId > 0) [_registrar.textures unregisterTexture:_textureId];
   _textureId = -1;
@@ -644,7 +599,8 @@ static void VtkFlutterCancelFrame(void* userData) {
   _viewport = {};
   _frameId = 0;
   _graphicsContextGeneration = 0;
+  return error;
 }
 
-- (void)dealloc { [self disposeSession]; }
+- (void)dealloc { [self disposeView]; }
 @end

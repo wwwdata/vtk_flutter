@@ -5,15 +5,15 @@
 NS_ASSUME_NONNULL_BEGIN
 
 NSDictionary<NSString*, id>* VtkFlutterCapabilitiesMap(void);
-BOOL VtkFlutterDecodeCoreApi(id _Nullable arguments,
-                             const VtkFlutterCoreApiV2* _Nullable* _Nonnull coreApi,
-                             NSString* _Nullable* _Nullable errorMessage);
+BOOL VtkFlutterDecodePresentationApi(
+    id _Nullable arguments,
+    const VtkFlutterPresentationApi* _Nullable* _Nonnull presentationApi,
+    NSString* _Nullable* _Nullable errorMessage);
+BOOL VtkFlutterDecodeNativeSession(
+    id _Nullable arguments,
+    VtkFlutterSession* _Nullable* _Nonnull nativeSession,
+    NSString* _Nullable* _Nullable errorMessage);
 BOOL VtkFlutterDecodeViewport(id _Nullable arguments, VtkFlutterViewport* viewport,
                               NSString* _Nullable* _Nullable errorMessage);
-BOOL VtkFlutterDecodeVolume(id _Nullable arguments, VtkFlutterVolume* volume,
-                            NSString* _Nullable* _Nullable errorMessage);
-BOOL VtkFlutterDecodeRenderRequest(id _Nullable arguments, VtkFlutterViewport viewport,
-                                   VtkFlutterRenderRequest* request,
-                                   NSString* _Nullable* _Nullable errorMessage);
 
 NS_ASSUME_NONNULL_END

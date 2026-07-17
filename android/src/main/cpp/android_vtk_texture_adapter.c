@@ -7,13 +7,11 @@
 
 #include <limits.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define METRIC_COUNT 26
-#define PATIENT_TO_CLIP_OFFSET 10
 
 typedef struct AndroidFrameTarget {
   ANativeWindow *window;
@@ -25,12 +23,17 @@ typedef struct AndroidFrameTarget {
   bool frame_in_progress;
 } AndroidFrameTarget;
 
-typedef struct AndroidAdapterSession {
-  const VtkFlutterCoreApiV2 *api;
+typedef struct AndroidAdapterView {
+  const VtkFlutterPresentationApi *api;
   VtkFlutterSession *session;
   VtkFlutterTextureTarget *target;
   AndroidFrameTarget frame_target;
-} AndroidAdapterSession;
+  bool attached;
+} AndroidAdapterView;
+
+#define REQUIRED_PRESENTATION_API_SIZE                                         \
+  (offsetof(VtkFlutterPresentationApi, texture_target_destroy) +               \
+   sizeof(((VtkFlutterPresentationApi *)0)->texture_target_destroy))
 
 static void SetStatus(VtkFlutterStatus *status, int32_t code,
                       const char *message) {
@@ -42,6 +45,15 @@ static void SetStatus(VtkFlutterStatus *status, int32_t code,
   if (message != NULL) {
     strncpy(status->message, message, VTK_FLUTTER_STATUS_MESSAGE_CAPACITY - 1U);
     status->message[VTK_FLUTTER_STATUS_MESSAGE_CAPACITY - 1U] = '\0';
+  }
+}
+
+static void ClearStatus(const VtkFlutterPresentationApi *api,
+                        VtkFlutterStatus *status) {
+  if (api != NULL && api->status_clear != NULL) {
+    api->status_clear(status);
+  } else {
+    SetStatus(status, VTK_FLUTTER_STATUS_OK, NULL);
   }
 }
 
@@ -60,35 +72,31 @@ static void ThrowStatus(JNIEnv *environment, const char *operation,
   char message[VTK_FLUTTER_STATUS_MESSAGE_CAPACITY + 64U];
   const char *detail = status != NULL && status->message[0] != '\0'
                            ? status->message
-                           : "native core operation failed";
-  (void)snprintf(message, sizeof(message), "%s failed (%d): %.255s", operation,
+                           : "native presentation operation failed";
+  (void)snprintf(message, sizeof(message), "%s failed (%d): %.511s", operation,
                  code, detail);
   ThrowJava(environment, message);
 }
 
-static bool ValidateCoreApi(const VtkFlutterCoreApiV2 *api,
-                            const char **message) {
+static bool ValidatePresentationApi(const VtkFlutterPresentationApi *api,
+                                    const char **message) {
   if (api == NULL) {
-    *message = "A positive VTK core API address is required";
+    *message = "A positive VTK presentation API address is required";
     return false;
   }
-  if (api->version != VTK_FLUTTER_CORE_API_VERSION_2) {
-    *message = "Unsupported VTK core API version";
+  if (api->version != VTK_FLUTTER_PRESENTATION_API_VERSION) {
+    *message = "Unsupported VTK presentation API version";
     return false;
   }
-  if (api->struct_size < sizeof(VtkFlutterCoreApiV2)) {
-    *message = "VTK core API table is too small";
+  if (api->struct_size < REQUIRED_PRESENTATION_API_SIZE) {
+    *message = "VTK presentation API table is too small";
     return false;
   }
-  if (api->status_clear == NULL || api->session_create == NULL ||
-      api->session_destroy == NULL || api->validate_volume == NULL ||
-      api->session_set_volume == NULL || api->validate_render_request == NULL ||
-      api->session_render == NULL ||
-      api->session_attach_texture_target == NULL ||
+  if (api->status_clear == NULL || api->session_attach_texture_target == NULL ||
       api->session_detach_texture_target == NULL ||
       api->texture_target_create == NULL ||
       api->texture_target_destroy == NULL) {
-    *message = "VTK core API table has missing functions";
+    *message = "VTK presentation API table has missing functions";
     return false;
   }
   return true;
@@ -124,8 +132,7 @@ static bool SetWindowGeometry(AndroidFrameTarget *target, int32_t width,
 }
 
 static int32_t BeginFrame(void *user_data, const VtkFlutterViewport *viewport,
-                          VtkFlutterCpuFrameV2 *frame,
-                          VtkFlutterStatus *status) {
+                          VtkFlutterCpuFrame *frame, VtkFlutterStatus *status) {
   AndroidFrameTarget *target = (AndroidFrameTarget *)user_data;
   if (target == NULL || viewport == NULL || frame == NULL) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
@@ -158,8 +165,8 @@ static int32_t BeginFrame(void *user_data, const VtkFlutterViewport *viewport,
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
   if (capacity_bytes > target->capacity_bytes) {
-    uint8_t *replacement = (uint8_t *)realloc(
-        target->pixels, (size_t)capacity_bytes);
+    uint8_t *replacement =
+        (uint8_t *)realloc(target->pixels, (size_t)capacity_bytes);
     if (replacement == NULL) {
       SetStatus(status, VTK_FLUTTER_STATUS_INTERNAL_ERROR,
                 "Could not allocate Android frame staging memory");
@@ -171,8 +178,8 @@ static int32_t BeginFrame(void *user_data, const VtkFlutterViewport *viewport,
   target->row_bytes = row_bytes;
   target->frame_in_progress = true;
 
-  frame->struct_size = sizeof(VtkFlutterCpuFrameV2);
-  frame->version = VTK_FLUTTER_CPU_FRAME_VERSION_2;
+  frame->struct_size = sizeof(VtkFlutterCpuFrame);
+  frame->version = VTK_FLUTTER_CPU_FRAME_VERSION;
   frame->pixels = target->pixels;
   frame->capacity_bytes = target->capacity_bytes;
   frame->row_bytes = row_bytes;
@@ -181,12 +188,12 @@ static int32_t BeginFrame(void *user_data, const VtkFlutterViewport *viewport,
   return VTK_FLUTTER_STATUS_OK;
 }
 
-static int32_t EndFrame(void *user_data, const VtkFlutterMetrics *metrics,
+static int32_t EndFrame(void *user_data, const VtkFlutterFrameMetrics *metrics,
                         VtkFlutterStatus *status) {
   (void)metrics;
   AndroidFrameTarget *target = (AndroidFrameTarget *)user_data;
-  if (target == NULL || target->window == NULL ||
-      !target->frame_in_progress || target->pixels == NULL) {
+  if (target == NULL || target->window == NULL || !target->frame_in_progress ||
+      target->pixels == NULL) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
               "No Android frame is ready for publication");
     return VTK_FLUTTER_STATUS_INVALID_STATE;
@@ -200,10 +207,9 @@ static int32_t EndFrame(void *user_data, const VtkFlutterMetrics *metrics,
     return VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE;
   }
   const uint64_t destination_row_bytes = (uint64_t)buffer.stride * 4ULL;
-  const bool valid = buffer.bits != NULL &&
-                     buffer.format == WINDOW_FORMAT_RGBA_8888 &&
-                     buffer.stride >= target->width &&
-                     buffer.height >= target->height;
+  const bool valid =
+      buffer.bits != NULL && buffer.format == WINDOW_FORMAT_RGBA_8888 &&
+      buffer.stride >= target->width && buffer.height >= target->height;
   if (valid) {
     for (int32_t row = 0; row < target->height; ++row) {
       memcpy((uint8_t *)buffer.bits + (size_t)row * destination_row_bytes,
@@ -230,11 +236,11 @@ static void CancelFrame(void *user_data) {
   }
 }
 
-static AndroidAdapterSession *AdapterFromHandle(jlong handle) {
+static AndroidAdapterView *ViewFromHandle(jlong handle) {
   if (handle <= 0) {
     return NULL;
   }
-  return (AndroidAdapterSession *)(uintptr_t)handle;
+  return (AndroidAdapterView *)(uintptr_t)handle;
 }
 
 static bool ReplaceWindow(JNIEnv *environment, AndroidFrameTarget *target,
@@ -266,259 +272,119 @@ static bool ReplaceWindow(JNIEnv *environment, AndroidFrameTarget *target,
   return true;
 }
 
-static void ReleaseAdapter(AndroidAdapterSession *adapter) {
-  if (adapter == NULL) {
-    return;
+static void ReleaseFrameTarget(AndroidFrameTarget *target) {
+  CancelFrame(target);
+  if (target->window != NULL) {
+    ANativeWindow_release(target->window);
+    target->window = NULL;
   }
-  CancelFrame(&adapter->frame_target);
-  if (adapter->session != NULL && adapter->target != NULL) {
-    VtkFlutterStatus status = {0};
-    if (adapter->api->session_detach_texture_target(
-            adapter->session, adapter->target, &status) !=
-        VTK_FLUTTER_STATUS_OK) {
-      adapter->api->session_destroy(adapter->session);
-      adapter->session = NULL;
-    }
-  }
-  if (adapter->target != NULL) {
-    VtkFlutterStatus status = {0};
-    (void)adapter->api->texture_target_destroy(adapter->target, &status);
-    adapter->target = NULL;
-  }
-  if (adapter->session != NULL) {
-    adapter->api->session_destroy(adapter->session);
-    adapter->session = NULL;
-  }
-  if (adapter->frame_target.window != NULL) {
-    ANativeWindow_release(adapter->frame_target.window);
-    adapter->frame_target.window = NULL;
-  }
-  free(adapter->frame_target.pixels);
-  adapter->frame_target.pixels = NULL;
-  free(adapter);
+  free(target->pixels);
+  target->pixels = NULL;
+  target->capacity_bytes = 0U;
+  target->row_bytes = 0U;
+  target->width = 0;
+  target->height = 0;
 }
 
-JNIEXPORT jlongArray JNICALL
+static int32_t ReleaseView(AndroidAdapterView *view, VtkFlutterStatus *status) {
+  if (view->attached) {
+    ClearStatus(view->api, status);
+    const int32_t detach_code = view->api->session_detach_texture_target(
+        view->session, view->target, status);
+    if (detach_code != VTK_FLUTTER_STATUS_OK) {
+      return detach_code;
+    }
+    view->attached = false;
+  }
+  if (view->target != NULL) {
+    ClearStatus(view->api, status);
+    const int32_t destroy_code =
+        view->api->texture_target_destroy(view->target, status);
+    if (destroy_code != VTK_FLUTTER_STATUS_OK) {
+      return destroy_code;
+    }
+    view->target = NULL;
+  }
+  ReleaseFrameTarget(&view->frame_target);
+  free(view);
+  return VTK_FLUTTER_STATUS_OK;
+}
+
+JNIEXPORT jlong JNICALL
 Java_ninja_bieker_vtk_1flutter_AndroidVtkTextureAdapter_nativeCreate(
-    JNIEnv *environment, jobject instance, jlong core_api_address,
-    jobject surface, jint width, jint height) {
+    JNIEnv *environment, jobject instance, jlong presentation_api_address,
+    jlong native_session_address, jobject surface, jint width, jint height) {
   (void)instance;
-  if (core_api_address <= 0 || surface == NULL || width <= 0 || height <= 0) {
-    ThrowJava(
-        environment,
-        "Positive core API address, surface, width, and height are required");
-    return NULL;
+  if (presentation_api_address <= 0 || native_session_address <= 0 ||
+      surface == NULL || width <= 0 || height <= 0) {
+    ThrowJava(environment,
+              "Positive presentation API address, native session address, "
+              "surface, width, and height are required");
+    return 0;
   }
-  if ((uint64_t)core_api_address > (uint64_t)UINTPTR_MAX) {
-    ThrowJava(environment, "The VTK core API address does not fit this ABI");
-    return NULL;
+  if ((uint64_t)presentation_api_address > (uint64_t)UINTPTR_MAX ||
+      (uint64_t)native_session_address > (uint64_t)UINTPTR_MAX) {
+    ThrowJava(environment, "A VTK native address does not fit this ABI");
+    return 0;
   }
 
-  const VtkFlutterCoreApiV2 *api =
-      (const VtkFlutterCoreApiV2 *)(uintptr_t)core_api_address;
+  const VtkFlutterPresentationApi *api =
+      (const VtkFlutterPresentationApi *)(uintptr_t)presentation_api_address;
   const char *validation_message = NULL;
-  if (!ValidateCoreApi(api, &validation_message)) {
+  if (!ValidatePresentationApi(api, &validation_message)) {
     ThrowJava(environment, validation_message);
-    return NULL;
+    return 0;
   }
 
-  AndroidAdapterSession *adapter =
-      (AndroidAdapterSession *)calloc(1U, sizeof(AndroidAdapterSession));
-  if (adapter == NULL) {
-    ThrowJava(environment, "Could not allocate the Android adapter session");
-    return NULL;
+  AndroidAdapterView *view =
+      (AndroidAdapterView *)calloc(1U, sizeof(AndroidAdapterView));
+  if (view == NULL) {
+    ThrowJava(environment, "Could not allocate the Android adapter view");
+    return 0;
   }
-  adapter->api = api;
+  view->api = api;
+  view->session = (VtkFlutterSession *)(uintptr_t)native_session_address;
+
   VtkFlutterStatus status = {0};
-  if (!ReplaceWindow(environment, &adapter->frame_target, surface, width,
-                     height, &status)) {
+  if (!ReplaceWindow(environment, &view->frame_target, surface, width, height,
+                     &status)) {
     ThrowStatus(environment, "create Android window", status.code, &status);
-    ReleaseAdapter(adapter);
-    return NULL;
+    ReleaseFrameTarget(&view->frame_target);
+    free(view);
+    return 0;
   }
 
-  int32_t code = api->session_create(&adapter->session, &status);
-  if (code != VTK_FLUTTER_STATUS_OK || adapter->session == NULL) {
-    ThrowStatus(environment, "create session", code, &status);
-    ReleaseAdapter(adapter);
-    return NULL;
-  }
-
-  const VtkFlutterFrameCallbacksV2 callbacks = {
-      .struct_size = sizeof(VtkFlutterFrameCallbacksV2),
-      .version = VTK_FLUTTER_FRAME_CALLBACKS_VERSION_2,
-      .user_data = &adapter->frame_target,
+  const VtkFlutterFrameCallbacks callbacks = {
+      .struct_size = sizeof(VtkFlutterFrameCallbacks),
+      .version = VTK_FLUTTER_FRAME_CALLBACKS_VERSION,
+      .user_data = &view->frame_target,
       .begin_frame = BeginFrame,
       .end_frame = EndFrame,
       .cancel_frame = CancelFrame,
   };
-  code = api->texture_target_create(&callbacks, &adapter->target, &status);
-  if (code != VTK_FLUTTER_STATUS_OK || adapter->target == NULL) {
+  ClearStatus(api, &status);
+  int32_t code = api->texture_target_create(&callbacks, &view->target, &status);
+  if (code != VTK_FLUTTER_STATUS_OK || view->target == NULL) {
     ThrowStatus(environment, "create texture target", code, &status);
-    ReleaseAdapter(adapter);
-    return NULL;
+    ReleaseFrameTarget(&view->frame_target);
+    free(view);
+    return 0;
   }
-  code = api->session_attach_texture_target(adapter->session, adapter->target,
-                                            &status);
+
+  ClearStatus(api, &status);
+  code =
+      api->session_attach_texture_target(view->session, view->target, &status);
   if (code != VTK_FLUTTER_STATUS_OK) {
     ThrowStatus(environment, "attach texture target", code, &status);
-    ReleaseAdapter(adapter);
-    return NULL;
+    VtkFlutterStatus destroy_status = {0};
+    (void)api->texture_target_destroy(view->target, &destroy_status);
+    view->target = NULL;
+    ReleaseFrameTarget(&view->frame_target);
+    free(view);
+    return 0;
   }
-
-  jlongArray result = (*environment)->NewLongArray(environment, 2);
-  if (result == NULL) {
-    ReleaseAdapter(adapter);
-    return NULL;
-  }
-  const jlong handles[2] = {
-      (jlong)(uintptr_t)adapter,
-      (jlong)(uintptr_t)adapter->session,
-  };
-  (*environment)->SetLongArrayRegion(environment, result, 0, 2, handles);
-  if ((*environment)->ExceptionCheck(environment)) {
-    ReleaseAdapter(adapter);
-    return NULL;
-  }
-  return result;
-}
-
-JNIEXPORT void JNICALL
-Java_ninja_bieker_vtk_1flutter_AndroidVtkTextureAdapter_nativeSetVolume(
-    JNIEnv *environment, jobject instance, jlong handle, jbyteArray voxel_array,
-    jint width, jint height, jint depth, jdoubleArray matrix_array) {
-  (void)instance;
-  AndroidAdapterSession *adapter = AdapterFromHandle(handle);
-  if (adapter == NULL || voxel_array == NULL || matrix_array == NULL) {
-    ThrowJava(environment,
-              "Android VTK session, voxels, and affine are required");
-    return;
-  }
-  const jsize voxel_byte_count =
-      (*environment)->GetArrayLength(environment, voxel_array);
-  if (voxel_byte_count <= 0 || voxel_byte_count % (jsize)sizeof(int16_t) != 0 ||
-      (*environment)->GetArrayLength(environment, matrix_array) != 16) {
-    ThrowJava(environment, "Invalid voxel bytes or affine matrix");
-    return;
-  }
-
-  int16_t *voxels = (int16_t *)malloc((size_t)voxel_byte_count);
-  if (voxels == NULL) {
-    ThrowJava(environment, "Could not allocate Android voxel staging memory");
-    return;
-  }
-  (*environment)
-      ->GetByteArrayRegion(environment, voxel_array, 0, voxel_byte_count,
-                           (jbyte *)voxels);
-  if ((*environment)->ExceptionCheck(environment)) {
-    free(voxels);
-    return;
-  }
-
-  VtkFlutterVolume volume = {
-      .voxels = voxels,
-      .voxel_count = (uint64_t)voxel_byte_count / sizeof(int16_t),
-      .width = width,
-      .height = height,
-      .depth = depth,
-  };
-  (*environment)
-      ->GetDoubleArrayRegion(environment, matrix_array, 0, 16,
-                             volume.index_to_patient);
-  if ((*environment)->ExceptionCheck(environment)) {
-    free(voxels);
-    return;
-  }
-  VtkFlutterStatus status = {0};
-  const int32_t code =
-      adapter->api->session_set_volume(adapter->session, &volume, &status);
-  free(voxels);
-  if (code != VTK_FLUTTER_STATUS_OK) {
-    ThrowStatus(environment, "set volume", code, &status);
-  }
-}
-
-JNIEXPORT jdoubleArray JNICALL
-Java_ninja_bieker_vtk_1flutter_AndroidVtkTextureAdapter_nativeRender(
-    JNIEnv *environment, jobject instance, jlong handle, jint mode, jint width,
-    jint height, jdouble window_center, jdouble window_width,
-    jdoubleArray origin_array, jdoubleArray normal_array, jdouble azimuth,
-    jdouble elevation, jdouble zoom) {
-  (void)instance;
-  AndroidAdapterSession *adapter = AdapterFromHandle(handle);
-  if (adapter == NULL || origin_array == NULL || normal_array == NULL ||
-      (*environment)->GetArrayLength(environment, origin_array) != 3 ||
-      (*environment)->GetArrayLength(environment, normal_array) != 3) {
-    ThrowJava(
-        environment,
-        "Android VTK session and three-value render vectors are required");
-    return NULL;
-  }
-
-  VtkFlutterRenderRequest request = {
-      .mode = mode,
-      .viewport = {.width = width, .height = height},
-      .window_center = window_center,
-      .window_width = window_width,
-      .camera_azimuth_degrees = azimuth,
-      .camera_elevation_degrees = elevation,
-      .camera_zoom = zoom,
-  };
-  (*environment)
-      ->GetDoubleArrayRegion(environment, origin_array, 0, 3,
-                             request.plane_origin);
-  (*environment)
-      ->GetDoubleArrayRegion(environment, normal_array, 0, 3,
-                             request.plane_normal);
-  if ((*environment)->ExceptionCheck(environment)) {
-    return NULL;
-  }
-
-  VtkFlutterMetrics metrics = {0};
-  VtkFlutterStatus status = {0};
-  const int32_t code = adapter->api->session_render(adapter->session, &request,
-                                                    &metrics, &status);
-  if (code != VTK_FLUTTER_STATUS_OK) {
-    ThrowStatus(environment, "render", code, &status);
-    return NULL;
-  }
-
-  const jdouble values[METRIC_COUNT] = {
-      (jdouble)metrics.volume_bytes,
-      (jdouble)metrics.frame_bytes,
-      (jdouble)metrics.surface_allocation_bytes,
-      metrics.render_ms,
-      metrics.surface_submit_ms,
-      metrics.gpu_sync_wait_ms,
-      metrics.cpu_readback_ms,
-      (jdouble)metrics.frame_width,
-      (jdouble)metrics.frame_height,
-      (jdouble)metrics.patient_to_clip_valid,
-      metrics.patient_to_clip[0],
-      metrics.patient_to_clip[1],
-      metrics.patient_to_clip[2],
-      metrics.patient_to_clip[3],
-      metrics.patient_to_clip[4],
-      metrics.patient_to_clip[5],
-      metrics.patient_to_clip[6],
-      metrics.patient_to_clip[7],
-      metrics.patient_to_clip[8],
-      metrics.patient_to_clip[9],
-      metrics.patient_to_clip[10],
-      metrics.patient_to_clip[11],
-      metrics.patient_to_clip[12],
-      metrics.patient_to_clip[13],
-      metrics.patient_to_clip[14],
-      metrics.patient_to_clip[15],
-  };
-  jdoubleArray result =
-      (*environment)->NewDoubleArray(environment, METRIC_COUNT);
-  if (result == NULL) {
-    return NULL;
-  }
-  (*environment)
-      ->SetDoubleArrayRegion(environment, result, 0, METRIC_COUNT, values);
-  return result;
+  view->attached = true;
+  return (jlong)(uintptr_t)view;
 }
 
 JNIEXPORT void JNICALL
@@ -526,12 +392,11 @@ Java_ninja_bieker_vtk_1flutter_AndroidVtkTextureAdapter_nativeResize(
     JNIEnv *environment, jobject instance, jlong handle, jint width,
     jint height) {
   (void)instance;
-  AndroidAdapterSession *adapter = AdapterFromHandle(handle);
+  AndroidAdapterView *view = ViewFromHandle(handle);
   VtkFlutterStatus status = {0};
-  if (adapter == NULL) {
-    ThrowJava(environment, "Android VTK session is not initialized");
-  } else if (!SetWindowGeometry(&adapter->frame_target, width, height,
-                                &status)) {
+  if (view == NULL) {
+    ThrowJava(environment, "Android VTK view is not initialized");
+  } else if (!SetWindowGeometry(&view->frame_target, width, height, &status)) {
     ThrowStatus(environment, "resize", status.code, &status);
   }
 }
@@ -541,11 +406,11 @@ Java_ninja_bieker_vtk_1flutter_AndroidVtkTextureAdapter_nativeRecreateGraphicsCo
     JNIEnv *environment, jobject instance, jlong handle, jobject surface,
     jint width, jint height) {
   (void)instance;
-  AndroidAdapterSession *adapter = AdapterFromHandle(handle);
+  AndroidAdapterView *view = ViewFromHandle(handle);
   VtkFlutterStatus status = {0};
-  if (adapter == NULL || surface == NULL) {
-    ThrowJava(environment, "Android VTK session and surface are required");
-  } else if (!ReplaceWindow(environment, &adapter->frame_target, surface, width,
+  if (view == NULL || surface == NULL) {
+    ThrowJava(environment, "Android VTK view and surface are required");
+  } else if (!ReplaceWindow(environment, &view->frame_target, surface, width,
                             height, &status)) {
     ThrowStatus(environment, "recreate presentation window", status.code,
                 &status);
@@ -556,10 +421,14 @@ JNIEXPORT void JNICALL
 Java_ninja_bieker_vtk_1flutter_AndroidVtkTextureAdapter_nativeDestroy(
     JNIEnv *environment, jobject instance, jlong handle) {
   (void)instance;
-  AndroidAdapterSession *adapter = AdapterFromHandle(handle);
-  if (adapter == NULL) {
-    ThrowJava(environment, "Android VTK session is not initialized");
+  AndroidAdapterView *view = ViewFromHandle(handle);
+  if (view == NULL) {
+    ThrowJava(environment, "Android VTK view is not initialized");
     return;
   }
-  ReleaseAdapter(adapter);
+  VtkFlutterStatus status = {0};
+  const int32_t code = ReleaseView(view, &status);
+  if (code != VTK_FLUTTER_STATUS_OK) {
+    ThrowStatus(environment, "dispose view", code, &status);
+  }
 }

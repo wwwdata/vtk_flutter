@@ -1,6 +1,5 @@
 #include <flutter/method_call.h>
 #include <flutter/method_result_functions.h>
-#include <flutter/standard_method_codec.h>
 #include <gtest/gtest.h>
 
 #include <vtk_flutter.h>
@@ -21,7 +20,6 @@
 namespace vtk_flutter::test {
 namespace {
 
-using flutter::EncodableList;
 using flutter::EncodableMap;
 using flutter::EncodableValue;
 using flutter::MethodCall;
@@ -40,23 +38,14 @@ EncodableValue Viewport(int width, int height) {
   });
 }
 
-EncodableValue SessionArguments(int width, int height,
-                                std::int64_t core_api_address) {
+EncodableValue ViewArguments(int width, int height,
+                             std::int64_t presentation_api_address,
+                             std::int64_t native_session_address) {
   return EncodableValue(EncodableMap{
       {Key("width"), EncodableValue(width)},
       {Key("height"), EncodableValue(height)},
-      {Key("coreApiAddress"), EncodableValue(core_api_address)},
-  });
-}
-
-EncodableValue CameraRequest(int mode, double zoom) {
-  return EncodableValue(EncodableMap{
-      {Key("mode"), EncodableValue(mode)},
-      {Key("windowCenter"), EncodableValue(350.0)},
-      {Key("windowWidth"), EncodableValue(1800.0)},
-      {Key("cameraAzimuthDegrees"), EncodableValue(25.0)},
-      {Key("cameraElevationDegrees"), EncodableValue(18.0)},
-      {Key("cameraZoom"), EncodableValue(zoom)},
+      {Key("presentationApiAddress"), EncodableValue(presentation_api_address)},
+      {Key("nativeSessionAddress"), EncodableValue(native_session_address)},
   });
 }
 
@@ -64,36 +53,6 @@ void VTK_FLUTTER_CALL StatusClear(VtkFlutterStatus *status) {
   if (status != nullptr) {
     *status = {};
   }
-}
-
-std::int32_t VTK_FLUTTER_CALL SessionCreate(VtkFlutterSession **,
-                                            VtkFlutterStatus *) {
-  return VTK_FLUTTER_STATUS_OK;
-}
-
-void VTK_FLUTTER_CALL SessionDestroy(VtkFlutterSession *) {}
-
-std::int32_t VTK_FLUTTER_CALL ValidateVolume(const VtkFlutterVolume *,
-                                             VtkFlutterStatus *) {
-  return VTK_FLUTTER_STATUS_OK;
-}
-
-std::int32_t VTK_FLUTTER_CALL SessionSetVolume(VtkFlutterSession *,
-                                               const VtkFlutterVolume *,
-                                               VtkFlutterStatus *) {
-  return VTK_FLUTTER_STATUS_OK;
-}
-
-std::int32_t VTK_FLUTTER_CALL
-ValidateRenderRequest(const VtkFlutterRenderRequest *, VtkFlutterStatus *) {
-  return VTK_FLUTTER_STATUS_OK;
-}
-
-std::int32_t VTK_FLUTTER_CALL SessionRender(VtkFlutterSession *,
-                                            const VtkFlutterRenderRequest *,
-                                            VtkFlutterMetrics *,
-                                            VtkFlutterStatus *) {
-  return VTK_FLUTTER_STATUS_OK;
 }
 
 std::int32_t VTK_FLUTTER_CALL AttachTarget(VtkFlutterSession *,
@@ -108,7 +67,7 @@ std::int32_t VTK_FLUTTER_CALL DetachTarget(VtkFlutterSession *,
   return VTK_FLUTTER_STATUS_OK;
 }
 
-std::int32_t VTK_FLUTTER_CALL TargetCreate(const VtkFlutterFrameCallbacksV2 *,
+std::int32_t VTK_FLUTTER_CALL TargetCreate(const VtkFlutterFrameCallbacks *,
                                            VtkFlutterTextureTarget **,
                                            VtkFlutterStatus *) {
   return VTK_FLUTTER_STATUS_OK;
@@ -119,17 +78,11 @@ std::int32_t VTK_FLUTTER_CALL TargetDestroy(VtkFlutterTextureTarget *,
   return VTK_FLUTTER_STATUS_OK;
 }
 
-VtkFlutterCoreApiV2 CompleteCoreApi() {
+VtkFlutterPresentationApi CompletePresentationApi() {
   return {
-      sizeof(VtkFlutterCoreApiV2),
-      VTK_FLUTTER_CORE_API_VERSION_2,
+      sizeof(VtkFlutterPresentationApi),
+      VTK_FLUTTER_PRESENTATION_API_VERSION,
       StatusClear,
-      SessionCreate,
-      SessionDestroy,
-      ValidateVolume,
-      SessionSetVolume,
-      ValidateRenderRequest,
-      SessionRender,
       AttachTarget,
       DetachTarget,
       TargetCreate,
@@ -137,20 +90,23 @@ VtkFlutterCoreApiV2 CompleteCoreApi() {
   };
 }
 
+bool IsNotImplemented(VtkFlutterPlugin &plugin, const char *method) {
+  bool not_implemented = false;
+  plugin.HandleMethodCall(
+      MethodCall(method, std::make_unique<EncodableValue>()),
+      std::make_unique<MethodResultFunctions<>>(
+          nullptr, nullptr, [&not_implemented]() { not_implemented = true; }));
+  return not_implemented;
+}
+
 } // namespace
 
-TEST(VtkFlutterCodec, ReportsAllCapabilities) {
+TEST(VtkFlutterCodec, ReportsOnlyGenericCapabilities) {
   const auto capabilities = windows::CapabilitiesMap();
-  const auto &modes =
-      std::get<EncodableList>(ValueAt(capabilities, "renderModes"));
 
-  ASSERT_EQ(modes.size(), 3U);
-  EXPECT_EQ(std::get<std::int32_t>(modes[0]), 1);
-  EXPECT_EQ(std::get<std::int32_t>(modes[1]), 2);
-  EXPECT_EQ(std::get<std::int32_t>(modes[2]), 3);
-  EXPECT_EQ(std::get<std::int64_t>(ValueAt(capabilities, "maxVolumeBytes")),
-            256LL * 1024LL * 1024LL);
   EXPECT_TRUE(std::get<bool>(ValueAt(capabilities, "supportsExternalTexture")));
+  EXPECT_EQ(capabilities.find(Key("renderModes")), capabilities.end());
+  EXPECT_EQ(capabilities.find(Key("maxVolumeBytes")), capabilities.end());
 }
 
 TEST(VtkFlutterCodec, DecodesBoundedViewport) {
@@ -164,54 +120,60 @@ TEST(VtkFlutterCodec, DecodesBoundedViewport) {
   EXPECT_THROW(windows::DecodeViewport(&invalid), std::invalid_argument);
 }
 
-TEST(VtkFlutterCodec, RequiresPositiveCoreApiAddress) {
-  const auto api = CompleteCoreApi();
-  const auto valid = SessionArguments(
-      640, 320,
-      static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(&api)));
-  const auto zero = SessionArguments(640, 320, 0);
+TEST(VtkFlutterCodec, RequiresPositivePresentationAndSessionAddresses) {
+  const auto api = CompletePresentationApi();
+  const auto api_address =
+      static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(&api));
+  const auto valid = ViewArguments(640, 320, api_address, 4096);
 
-  EXPECT_EQ(windows::DecodeCoreApiAddress(&valid),
+  EXPECT_EQ(windows::DecodePresentationApiAddress(&valid),
             reinterpret_cast<std::uintptr_t>(&api));
-  EXPECT_THROW(windows::DecodeCoreApiAddress(&zero), std::invalid_argument);
-  const auto missing = Viewport(640, 320);
-  EXPECT_THROW(windows::DecodeCoreApiAddress(&missing), std::invalid_argument);
+  EXPECT_EQ(windows::DecodeNativeSessionAddress(&valid), 4096U);
+
+  const auto zero_api = ViewArguments(640, 320, 0, 4096);
+  EXPECT_THROW(windows::DecodePresentationApiAddress(&zero_api),
+               std::invalid_argument);
+  const auto zero_session = ViewArguments(640, 320, api_address, 0);
+  EXPECT_THROW(windows::DecodeNativeSessionAddress(&zero_session),
+               std::invalid_argument);
 }
 
-TEST(VtkFlutterCoreApi, ValidatesVersionSizeAndCompleteTable) {
-  auto api = CompleteCoreApi();
-  EXPECT_EQ(
-      &windows::ValidateCoreApiAddress(reinterpret_cast<std::uintptr_t>(&api)),
-      &api);
+TEST(VtkFlutterPresentationApi, ValidatesVersionSizeAndCompleteTable) {
+  auto api = CompletePresentationApi();
+  EXPECT_EQ(&windows::ValidatePresentationApiAddress(
+                reinterpret_cast<std::uintptr_t>(&api)),
+            &api);
 
-  api.version = VTK_FLUTTER_CORE_API_VERSION_2 + 1;
-  EXPECT_THROW(
-      windows::ValidateCoreApiAddress(reinterpret_cast<std::uintptr_t>(&api)),
-      std::invalid_argument);
-  api = CompleteCoreApi();
-  api.struct_size = offsetof(VtkFlutterCoreApiV2, texture_target_destroy);
-  EXPECT_THROW(
-      windows::ValidateCoreApiAddress(reinterpret_cast<std::uintptr_t>(&api)),
-      std::invalid_argument);
-  api = CompleteCoreApi();
+  api.version = VTK_FLUTTER_PRESENTATION_API_VERSION + 1;
+  EXPECT_THROW(windows::ValidatePresentationApiAddress(
+                   reinterpret_cast<std::uintptr_t>(&api)),
+               std::invalid_argument);
+  api = CompletePresentationApi();
+  api.struct_size = offsetof(VtkFlutterPresentationApi, texture_target_destroy);
+  EXPECT_THROW(windows::ValidatePresentationApiAddress(
+                   reinterpret_cast<std::uintptr_t>(&api)),
+               std::invalid_argument);
+  api = CompletePresentationApi();
   api.texture_target_destroy = nullptr;
-  EXPECT_THROW(
-      windows::ValidateCoreApiAddress(reinterpret_cast<std::uintptr_t>(&api)),
-      std::invalid_argument);
+  EXPECT_THROW(windows::ValidatePresentationApiAddress(
+                   reinterpret_cast<std::uintptr_t>(&api)),
+               std::invalid_argument);
 }
 
 TEST(WindowsFrameTarget, PublishesTopDownRgbaStorageOnlyOnEnd) {
   windows::WindowsFrameTarget target;
   auto callbacks = target.Callbacks();
   const VtkFlutterViewport viewport{2, 2};
-  VtkFlutterCpuFrameV2 frame{};
+  VtkFlutterCpuFrame frame{};
   VtkFlutterStatus status{};
 
   ASSERT_EQ(
       callbacks.begin_frame(callbacks.user_data, &viewport, &frame, &status),
       VTK_FLUTTER_STATUS_OK);
-  EXPECT_EQ(frame.struct_size, sizeof(VtkFlutterCpuFrameV2));
-  EXPECT_EQ(frame.version, VTK_FLUTTER_CPU_FRAME_VERSION_2);
+  EXPECT_EQ(callbacks.struct_size, sizeof(VtkFlutterFrameCallbacks));
+  EXPECT_EQ(callbacks.version, VTK_FLUTTER_FRAME_CALLBACKS_VERSION);
+  EXPECT_EQ(frame.struct_size, sizeof(VtkFlutterCpuFrame));
+  EXPECT_EQ(frame.version, VTK_FLUTTER_CPU_FRAME_VERSION);
   EXPECT_EQ(frame.row_bytes, 8U);
   EXPECT_EQ(frame.capacity_bytes, 16U);
   EXPECT_EQ(frame.pixel_format, VTK_FLUTTER_PIXEL_FORMAT_RGBA8888);
@@ -222,7 +184,7 @@ TEST(WindowsFrameTarget, PublishesTopDownRgbaStorageOnlyOnEnd) {
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
   };
   std::copy(top_down_pixels.begin(), top_down_pixels.end(), frame.pixels);
-  VtkFlutterMetrics metrics{};
+  VtkFlutterFrameMetrics metrics{};
   ASSERT_EQ(callbacks.end_frame(callbacks.user_data, &metrics, &status),
             VTK_FLUTTER_STATUS_OK);
 
@@ -239,9 +201,9 @@ TEST(WindowsFrameTarget, CancelDiscardsPendingStorageWithoutPublishing) {
   windows::WindowsFrameTarget target;
   auto callbacks = target.Callbacks();
   const VtkFlutterViewport viewport{1, 1};
-  VtkFlutterCpuFrameV2 first{};
+  VtkFlutterCpuFrame first{};
   VtkFlutterStatus status{};
-  VtkFlutterMetrics metrics{};
+  VtkFlutterFrameMetrics metrics{};
 
   ASSERT_EQ(
       callbacks.begin_frame(callbacks.user_data, &viewport, &first, &status),
@@ -251,7 +213,7 @@ TEST(WindowsFrameTarget, CancelDiscardsPendingStorageWithoutPublishing) {
             VTK_FLUTTER_STATUS_OK);
   const auto published = target.LatestFrame();
 
-  VtkFlutterCpuFrameV2 cancelled{};
+  VtkFlutterCpuFrame cancelled{};
   ASSERT_EQ(callbacks.begin_frame(callbacks.user_data, &viewport, &cancelled,
                                   &status),
             VTK_FLUTTER_STATUS_OK);
@@ -260,88 +222,14 @@ TEST(WindowsFrameTarget, CancelDiscardsPendingStorageWithoutPublishing) {
 
   EXPECT_EQ(target.LatestFrame(), published);
   EXPECT_EQ(target.SubmittedFrameId(), 1);
-  VtkFlutterCpuFrameV2 replacement{};
+  VtkFlutterCpuFrame replacement{};
   EXPECT_EQ(callbacks.begin_frame(callbacks.user_data, &viewport, &replacement,
                                   &status),
             VTK_FLUTTER_STATUS_OK);
   callbacks.cancel_frame(callbacks.user_data);
 }
 
-TEST(VtkFlutterCodec, PreservesCameraZoomForBothVolumeModes) {
-  const VtkFlutterViewport viewport{640, 320};
-  const auto volume_arguments = CameraRequest(2, 1.5);
-  const auto locator_arguments = CameraRequest(3, 2.5);
-
-  const auto volume = windows::DecodeRenderRequest(&volume_arguments, viewport);
-  const auto locator =
-      windows::DecodeRenderRequest(&locator_arguments, viewport);
-
-  EXPECT_EQ(volume.mode, VTK_FLUTTER_RENDER_VOLUME_3D);
-  EXPECT_DOUBLE_EQ(volume.camera_zoom, 1.5);
-  EXPECT_EQ(locator.mode, VTK_FLUTTER_RENDER_VOLUME_LOCATOR);
-  EXPECT_DOUBLE_EQ(locator.camera_zoom, 2.5);
-}
-
-TEST(VtkFlutterCodec, DecodesObliqueTypedVectors) {
-  const VtkFlutterViewport viewport{800, 600};
-  const EncodableValue arguments(EncodableMap{
-      {Key("mode"), EncodableValue(1)},
-      {Key("windowCenter"), EncodableValue(350.0)},
-      {Key("windowWidth"), EncodableValue(1800.0)},
-      {Key("planeOrigin"),
-       EncodableValue(std::vector<double>{10.0, 20.0, 30.0})},
-      {Key("planeNormal"),
-       EncodableValue(std::vector<double>{0.0, 0.34, 0.94})},
-  });
-
-  const auto request = windows::DecodeRenderRequest(&arguments, viewport);
-
-  EXPECT_EQ(request.mode, VTK_FLUTTER_RENDER_OBLIQUE_MPR);
-  EXPECT_DOUBLE_EQ(request.plane_origin[0], 10.0);
-  EXPECT_DOUBLE_EQ(request.plane_normal[1], 0.34);
-  EXPECT_DOUBLE_EQ(request.camera_zoom, 1.0);
-}
-
-TEST(VtkFlutterCodec, OwnsDecodedVolumeBytes) {
-  const EncodableValue arguments(EncodableMap{
-      {Key("voxels"),
-       EncodableValue(std::vector<std::uint8_t>{0, 0, 1, 0, 255, 255, 2, 0})},
-      {Key("width"), EncodableValue(2)},
-      {Key("height"), EncodableValue(2)},
-      {Key("depth"), EncodableValue(1)},
-      {Key("indexToPatient"), EncodableValue(std::vector<double>{
-                                  1,
-                                  0,
-                                  0,
-                                  0,
-                                  0,
-                                  1,
-                                  0,
-                                  0,
-                                  0,
-                                  0,
-                                  1,
-                                  0,
-                                  0,
-                                  0,
-                                  0,
-                                  1,
-                              })},
-  });
-
-  const auto owned = windows::DecodeVolume(&arguments);
-  const auto native = owned.NativeView();
-
-  EXPECT_EQ(native.voxel_count, 4U);
-  EXPECT_EQ(native.width, 2);
-  EXPECT_EQ(native.height, 2);
-  EXPECT_EQ(native.depth, 1);
-  EXPECT_EQ(native.voxels[1], 1);
-  EXPECT_EQ(native.voxels[2], -1);
-  EXPECT_DOUBLE_EQ(native.index_to_patient[15], 1.0);
-}
-
-TEST(VtkFlutterPlugin, UsesSessionChannelContractWithoutRegistrar) {
+TEST(VtkFlutterPlugin, UsesGenericSessionChannelContractWithoutRegistrar) {
   VtkFlutterPlugin plugin;
   EncodableMap capabilities;
   plugin.HandleMethodCall(
@@ -352,23 +240,61 @@ TEST(VtkFlutterPlugin, UsesSessionChannelContractWithoutRegistrar) {
           },
           nullptr, nullptr));
 
-  EXPECT_EQ(std::get<std::int64_t>(ValueAt(capabilities, "maxVolumeBytes")),
-            256LL * 1024LL * 1024LL);
+  EXPECT_TRUE(std::get<bool>(ValueAt(capabilities, "supportsExternalTexture")));
 }
 
-TEST(VtkFlutterPlugin, RejectsCreateSessionWithoutCoreApiAddress) {
+TEST(VtkFlutterPlugin, RejectsCreateViewWithoutPresentationApiAddress) {
   VtkFlutterPlugin plugin;
   std::string error_code;
   const auto arguments = Viewport(640, 320);
   plugin.HandleMethodCall(
-      MethodCall("createSession", std::make_unique<EncodableValue>(arguments)),
+      MethodCall("createView", std::make_unique<EncodableValue>(arguments)),
       std::make_unique<MethodResultFunctions<>>(
           nullptr,
           [&error_code](const std::string &code, const std::string &,
                         const EncodableValue *) { error_code = code; },
           nullptr));
 
-  EXPECT_EQ(error_code, "ffi_abi");
+  EXPECT_EQ(error_code, "invalid_presentation_api");
+}
+
+TEST(VtkFlutterPlugin, RejectsCreateViewWithoutNativeSessionAddress) {
+  VtkFlutterPlugin plugin;
+  const auto api = CompletePresentationApi();
+  const auto arguments = ViewArguments(
+      640, 320,
+      static_cast<std::int64_t>(reinterpret_cast<std::uintptr_t>(&api)), 0);
+  std::string error_code;
+  plugin.HandleMethodCall(
+      MethodCall("createView", std::make_unique<EncodableValue>(arguments)),
+      std::make_unique<MethodResultFunctions<>>(
+          nullptr,
+          [&error_code](const std::string &code, const std::string &,
+                        const EncodableValue *) { error_code = code; },
+          nullptr));
+
+  EXPECT_EQ(error_code, "invalid_native_session");
+}
+
+TEST(VtkFlutterPlugin, RemovesLegacyProductAndSessionMethods) {
+  VtkFlutterPlugin plugin;
+
+  EXPECT_TRUE(IsNotImplemented(plugin, "createSession"));
+  EXPECT_TRUE(IsNotImplemented(plugin, "setVolume"));
+  EXPECT_TRUE(IsNotImplemented(plugin, "render"));
+  EXPECT_TRUE(IsNotImplemented(plugin, "disposeSession"));
+}
+
+TEST(VtkFlutterPlugin, DisposesAbsentViewIdempotently) {
+  VtkFlutterPlugin plugin;
+  bool succeeded = false;
+  plugin.HandleMethodCall(
+      MethodCall("disposeView", std::make_unique<EncodableValue>()),
+      std::make_unique<MethodResultFunctions<>>(
+          [&succeeded](const EncodableValue *) { succeeded = true; }, nullptr,
+          nullptr));
+
+  EXPECT_TRUE(succeeded);
 }
 
 TEST(VtkFlutterPlugin, ReportsCompleteDisposedStatus) {
