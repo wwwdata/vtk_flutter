@@ -54,6 +54,13 @@ with the checked-in architecture-independent equivalent. This permits the
 also explicitly disables CMake's executable bundle default because the wrapper
 executables are build tools, not iOS applications.
 
+VTK's compile-tools package derives target preprocessor macros with a custom
+compiler command that copies `CMAKE_CXX_FLAGS` but bypasses CMake's normal
+Android compile rule, including its `CMAKE_CXX_COMPILER_TARGET`. For Android
+builds, the bootstrap deterministically adapts the pinned VTK template so that
+its Clang macro probe forwards that existing target. The NDK remains the source
+of the ABI- and API-specific target triple.
+
 VTK 9.6.2 also contains two `uptrdiff_t` declarations in
 [`vtkIOSRenderWindow.mm`](https://gitlab.kitware.com/vtk/vtk/-/blob/v9.6.2/Rendering/OpenGL2/vtkIOSRenderWindow.mm);
 that type does not exist. The bootstrap deterministically changes only those

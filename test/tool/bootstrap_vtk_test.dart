@@ -267,6 +267,48 @@ void SetParentInfo() {
     });
   });
 
+  group('applyVtkCompileToolsTargetFix', () {
+    late Directory sourceDirectory;
+    late File templateFile;
+
+    setUp(() {
+      sourceDirectory = Directory.systemTemp.createTempSync(
+        'vtk-compile-tools-source-test-',
+      );
+      templateFile = File(
+        _path(sourceDirectory.path, 'CMake', 'vtkcompiletools-config.cmake.in'),
+      )..createSync(recursive: true);
+    });
+
+    tearDown(() {
+      sourceDirectory.deleteSync(recursive: true);
+    });
+
+    test('forwards the Clang target and is idempotent', () {
+      templateFile.writeAsStringSync(r'''
+    separate_arguments(_compile_tools_flags NATIVE_COMMAND "${CMAKE_CXX_FLAGS}")
+
+    # Add a custom command and target to generate the macro headers.
+''');
+
+      applyVtkCompileToolsTargetFix(sourceDirectory);
+      applyVtkCompileToolsTargetFix(sourceDirectory);
+
+      final contents = templateFile.readAsStringSync();
+      expect(contents, contains(r'--target=${CMAKE_CXX_COMPILER_TARGET}'));
+      expect('list(INSERT'.allMatches(contents), hasLength(1));
+    });
+
+    test('rejects source contents outside the pinned patch contract', () {
+      templateFile.writeAsStringSync('set(unexpected TRUE)\n');
+
+      expect(
+        () => applyVtkCompileToolsTargetFix(sourceDirectory),
+        throwsA(isA<StateError>()),
+      );
+    });
+  });
+
   test('compile tools metadata accepts a 32-bit cross-build target', () async {
     final packageDirectory = Directory.systemTemp.createTempSync(
       'vtk-compile-tools-package-test-',

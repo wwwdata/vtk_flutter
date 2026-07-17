@@ -407,6 +407,9 @@ final class VtkBootstrapper {
       if (options.platform.startsWith('ios-')) {
         stdout.writeln('Would apply the VTK 9.6.2 iOS pointer type fix.');
       }
+      if (options.platform.startsWith('android-')) {
+        stdout.writeln('Would apply the VTK 9.6.2 compile-tools target fix.');
+      }
       for (final command in plan) {
         _printCommand(command);
       }
@@ -427,6 +430,9 @@ final class VtkBootstrapper {
     }
     if (options.platform.startsWith('ios-')) {
       applyVtkIosPointerTypeFix(sourceDirectory);
+    }
+    if (options.platform.startsWith('android-')) {
+      applyVtkCompileToolsTargetFix(sourceDirectory);
     }
 
     for (final command in plan) {
@@ -614,6 +620,49 @@ void applyVtkIosPointerTypeFix(Directory sourceDirectory) {
   sourceFile.writeAsStringSync(
     contents.replaceAll(invalidDeclaration, correctedDeclaration),
   );
+}
+
+void applyVtkCompileToolsTargetFix(Directory sourceDirectory) {
+  final templateFile = File(
+    _join([sourceDirectory.path, 'CMake', 'vtkcompiletools-config.cmake.in']),
+  );
+  if (!templateFile.existsSync()) {
+    throw StateError(
+      '${templateFile.path} is missing; cannot apply the VTK $vtkVersion '
+      'compile-tools target fix.',
+    );
+  }
+
+  const original = '''
+    separate_arguments(_compile_tools_flags NATIVE_COMMAND "\${CMAKE_CXX_FLAGS}")
+
+    # Add a custom command and target to generate the macro headers.
+''';
+  const corrected = '''
+    separate_arguments(_compile_tools_flags NATIVE_COMMAND "\${CMAKE_CXX_FLAGS}")
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
+        CMAKE_CXX_COMPILER_TARGET)
+      list(INSERT _compile_tools_flags 0
+        "--target=\${CMAKE_CXX_COMPILER_TARGET}")
+    endif ()
+
+    # Add a custom command and target to generate the macro headers.
+''';
+  final contents = templateFile.readAsStringSync();
+  final originalCount = original.allMatches(contents).length;
+  final correctedCount = corrected.allMatches(contents).length;
+  if (originalCount == 0 && correctedCount == 1) {
+    return;
+  }
+  if (originalCount != 1 || correctedCount != 0) {
+    throw StateError(
+      'Unexpected vtkcompiletools-config.cmake.in contents for VTK '
+      '$vtkVersion: found $originalCount original and $correctedCount '
+      'corrected command blocks.',
+    );
+  }
+
+  templateFile.writeAsStringSync(contents.replaceFirst(original, corrected));
 }
 
 Future<void> _download(Uri uri, File destination) async {
