@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 const vtkVersion = '9.6.2';
-const vtkBuildParallelJobs = '10';
+const vtkBuildParallelJobs = '4';
 const vtkArchiveSha256 =
     'aed12cec12a9609179bf66329070266627ca64244a10856a452b2a17ffb04a1d';
 const vtkArchiveUrl =

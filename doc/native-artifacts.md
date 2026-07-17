@@ -44,7 +44,8 @@ SHA-256: aed12cec12a9609179bf66329070266627ca64244a10856a452b2a17ffb04a1d
 The bootstrap enables only the selected modules and keeps
 `VTK_ENABLE_WRAPPING=ON` with `VTK_WRAP_SERIALIZATION=ON`. Serialization
 wrapping provides the generic object invocation support; language wrappers are
-not a public package API.
+not a public package API. VTK compilation is capped at four parallel jobs so
+template-heavy builds stay within standard hosted-runner resources.
 
 VTK 9.6.2 generates pointer-size-specific package metadata for its host-side
 compile tools. Those executables run on the build host regardless of the target
