@@ -15,6 +15,7 @@ on:
       - "pubspec.yaml"
       - "tool/bootstrap_vtk.dart"
       - "tool/native_artifacts.dart"
+      - "native/cmake/vtkcompiletools-config-version.cmake"
       - "windows/**"
   push:
     branches:
@@ -137,7 +138,7 @@ jobs:
           path: |
             .dart_tool/vtk/${{ env.VTK_VERSION }}/${{ matrix.target }}/install
             .dart_tool/vtk/${{ env.VTK_VERSION }}/${{ matrix.target }}/source
-          key: vtk-${{ env.VTK_VERSION }}-${{ env.VTK_SOURCE_SHA256 }}-${{ matrix.target }}-${{ hashFiles('tool/bootstrap_vtk.dart') }}
+          key: vtk-${{ env.VTK_VERSION }}-${{ env.VTK_SOURCE_SHA256 }}-${{ matrix.target }}-${{ hashFiles('tool/bootstrap_vtk.dart', 'native/cmake/vtkcompiletools-config-version.cmake') }}
 
       - name: Bootstrap VTK
         if: steps.vtk-cache.outputs.cache-hit != 'true'
@@ -150,7 +151,7 @@ jobs:
           path: |
             .dart_tool/vtk/${{ env.VTK_VERSION }}/${{ matrix.target }}/install
             .dart_tool/vtk/${{ env.VTK_VERSION }}/${{ matrix.target }}/source
-          key: vtk-${{ env.VTK_VERSION }}-${{ env.VTK_SOURCE_SHA256 }}-${{ matrix.target }}-${{ hashFiles('tool/bootstrap_vtk.dart') }}
+          key: vtk-${{ env.VTK_VERSION }}-${{ env.VTK_SOURCE_SHA256 }}-${{ matrix.target }}-${{ hashFiles('tool/bootstrap_vtk.dart', 'native/cmake/vtkcompiletools-config-version.cmake') }}
 
       - name: Verify native license inventory
         shell: bash

@@ -46,6 +46,21 @@ The bootstrap enables only the selected modules and keeps
 wrapping provides the generic object invocation support; language wrappers are
 not a public package API.
 
+VTK 9.6.2 generates pointer-size-specific package metadata for its host-side
+compile tools. Those executables run on the build host regardless of the target
+architecture, so the bootstrap replaces only the generated version metadata
+with the checked-in architecture-independent equivalent. This permits the
+64-bit host tools to serve the 32-bit Android target. iOS target configuration
+also explicitly disables CMake's executable bundle default because the wrapper
+executables are build tools, not iOS applications.
+
+VTK 9.6.2 also contains two `uptrdiff_t` declarations in
+[`vtkIOSRenderWindow.mm`](https://gitlab.kitware.com/vtk/vtk/-/blob/v9.6.2/Rendering/OpenGL2/vtkIOSRenderWindow.mm);
+that type does not exist. The bootstrap deterministically changes only those
+two declarations to `uintptr_t`, matching VTK's Cocoa implementation, and
+fails if the pinned source no longer has the expected contents. These are
+upstream build compatibility adaptations, not package rendering logic.
+
 ## Three independent workflows
 
 1. **Quality** runs formatting, analysis, Dart, example, and vtk.js tests,

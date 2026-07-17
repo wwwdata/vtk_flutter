@@ -190,6 +190,8 @@ List<CmakeCommand> createBuildPlan({
   required String sourceDirectory,
   required String cacheDirectory,
   String? androidNdkDirectory,
+  String compileToolsVersionFile =
+      'native/cmake/vtkcompiletools-config-version.cmake',
 }) {
   final buildDirectory = _join([cacheDirectory, 'build']);
   final installDirectory = _join([cacheDirectory, 'install']);
@@ -213,6 +215,19 @@ List<CmakeCommand> createBuildPlan({
           '-DVTK_ENABLE_WRAPPING=ON',
           '-DVTK_WRAP_SERIALIZATION=ON',
           '-DBUILD_SHARED_LIBS=ON',
+        ],
+      ),
+    );
+    commands.add(
+      CmakeCommand(
+        arguments: [
+          '-E',
+          'copy_if_different',
+          compileToolsVersionFile,
+          _join([
+            compileToolsDirectory,
+            'vtkcompiletools-config-version.cmake',
+          ]),
         ],
       ),
     );
@@ -287,6 +302,7 @@ List<String> _platformCmakeArguments({
   ],
   'ios-arm64' => [
     '-DCMAKE_SYSTEM_NAME=iOS',
+    '-DCMAKE_MACOSX_BUNDLE=OFF',
     '-DAPPLE_IOS=ON',
     '-DTARGET_OS_IPHONE=ON',
     '-DCMAKE_OSX_ARCHITECTURES=arm64',
@@ -295,6 +311,7 @@ List<String> _platformCmakeArguments({
   ],
   'ios-simulator-arm64' => [
     '-DCMAKE_SYSTEM_NAME=iOS',
+    '-DCMAKE_MACOSX_BUNDLE=OFF',
     '-DAPPLE_IOS=ON',
     '-DTARGET_IPHONE_SIMULATOR=ON',
     '-DCMAKE_OSX_ARCHITECTURES=arm64',
@@ -303,6 +320,7 @@ List<String> _platformCmakeArguments({
   ],
   'ios-simulator-x64' => [
     '-DCMAKE_SYSTEM_NAME=iOS',
+    '-DCMAKE_MACOSX_BUNDLE=OFF',
     '-DAPPLE_IOS=ON',
     '-DTARGET_IPHONE_SIMULATOR=ON',
     '-DCMAKE_OSX_ARCHITECTURES=x86_64',
@@ -369,6 +387,12 @@ final class VtkBootstrapper {
       sourceDirectory: sourceDirectory.path,
       cacheDirectory: cacheDirectory.path,
       androidNdkDirectory: androidNdkDirectory,
+      compileToolsVersionFile: _join([
+        packageDirectory.path,
+        'native',
+        'cmake',
+        'vtkcompiletools-config-version.cmake',
+      ]),
     );
 
     stdout.writeln('VTK target: ${options.platform}');
@@ -379,6 +403,9 @@ final class VtkBootstrapper {
       if (options.sourceDirectory == null) {
         stdout.writeln('Would download $vtkArchiveUrl');
         stdout.writeln('Would verify SHA-256 $vtkArchiveSha256');
+      }
+      if (options.platform.startsWith('ios-')) {
+        stdout.writeln('Would apply the VTK 9.6.2 iOS pointer type fix.');
       }
       for (final command in plan) {
         _printCommand(command);
@@ -397,6 +424,9 @@ final class VtkBootstrapper {
       );
     } else {
       validateVtkSourceDirectory(sourceDirectory);
+    }
+    if (options.platform.startsWith('ios-')) {
+      applyVtkIosPointerTypeFix(sourceDirectory);
     }
 
     for (final command in plan) {
@@ -547,6 +577,43 @@ void validateVtkSourceDirectory(Directory sourceDirectory) {
       '${sourceDirectory.path}.',
     );
   }
+}
+
+void applyVtkIosPointerTypeFix(Directory sourceDirectory) {
+  final sourceFile = File(
+    _join([
+      sourceDirectory.path,
+      'Rendering',
+      'OpenGL2',
+      'vtkIOSRenderWindow.mm',
+    ]),
+  );
+  if (!sourceFile.existsSync()) {
+    throw StateError(
+      '${sourceFile.path} is missing; cannot apply the VTK $vtkVersion '
+      'iOS pointer type fix.',
+    );
+  }
+
+  const invalidDeclaration = '  uptrdiff_t tmp = 0;';
+  const correctedDeclaration = '  uintptr_t tmp = 0;';
+  final contents = sourceFile.readAsStringSync();
+  final invalidCount = invalidDeclaration.allMatches(contents).length;
+  final correctedCount = correctedDeclaration.allMatches(contents).length;
+  if (invalidCount == 0 && correctedCount == 2) {
+    return;
+  }
+  if (invalidCount != 2 || correctedCount != 0) {
+    throw StateError(
+      'Unexpected vtkIOSRenderWindow.mm contents for VTK $vtkVersion: '
+      'found $invalidCount invalid and $correctedCount corrected pointer '
+      'declarations.',
+    );
+  }
+
+  sourceFile.writeAsStringSync(
+    contents.replaceAll(invalidDeclaration, correctedDeclaration),
+  );
 }
 
 Future<void> _download(Uri uri, File destination) async {
