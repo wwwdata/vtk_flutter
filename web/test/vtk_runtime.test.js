@@ -10,6 +10,7 @@ globalThis.window = {
 
 const {
   closeSession,
+  createFlyingEdges3D,
   createImageData,
   createObject,
   destroyObject,
@@ -18,12 +19,24 @@ const {
   openSession,
 } = await import('../src/vtk_runtime.js');
 
+test('merges contour points for connected-region extraction', () => {
+  const contour = createFlyingEdges3D();
+  try {
+    assert.equal(contour.getMergePoints(), true);
+  } finally {
+    contour.delete();
+  }
+});
+
 test('reports generic vtk.js capabilities and explicit substitutions', () => {
   const capabilities = getCapabilities();
 
   assert.equal(capabilities.maxImageBytes, 256 * 1024 * 1024);
   assert.ok(capabilities.supportedObjectTypes.includes('imageData'));
   assert.ok(capabilities.supportedObjectTypes.includes('flyingEdges3D'));
+  assert.ok(
+    capabilities.supportedObjectTypes.includes('polyDataConnectivityFilter'),
+  );
   assert.ok(
     !capabilities.supportedObjectTypes.includes(
       'imageMapToWindowLevelColors',
@@ -53,7 +66,19 @@ test('creates scalar images and connects a generic surface pipeline', async () =
     const contour = await createObject(session, 'flyingEdges3D');
     await invoke(session, contour, 'setInputData', [image]);
     await invoke(session, contour, 'setIsoValue', [0, 0]);
-    const output = await invoke(session, contour, 'getOutputPort', [0]);
+    const contourOutput = await invoke(session, contour, 'getOutputPort', [0]);
+    const connectivity = await createObject(
+      session,
+      'polyDataConnectivityFilter',
+    );
+    await invoke(session, connectivity, 'setInputConnection', [
+      0,
+      contourOutput,
+    ]);
+    await invoke(session, connectivity, 'setConnectivityMode', [
+      'largestRegion',
+    ]);
+    const output = await invoke(session, connectivity, 'getOutputPort', [0]);
     const mapper = await createObject(session, 'polyDataMapper');
     await invoke(session, mapper, 'setInputConnection', [0, output]);
     const actor = await createObject(session, 'actor');
@@ -63,6 +88,45 @@ test('creates scalar images and connects a generic surface pipeline', async () =
 
     assert.ok(Number.isSafeInteger(output));
     assert.ok(output > 0);
+  } finally {
+    await closeSession(session);
+  }
+});
+
+test('supports surface placement, lighting, and connectivity modes', async () => {
+  const session = await openSession();
+  try {
+    const connectivity = await createObject(
+      session,
+      'polyDataConnectivityFilter',
+    );
+    await invoke(session, connectivity, 'setConnectivityMode', ['allRegions']);
+    await invoke(session, connectivity, 'setConnectivityMode', [
+      'largestRegion',
+    ]);
+
+    const actor = await createObject(session, 'actor');
+    await invoke(session, actor, 'setPosition', [1, 2, 3]);
+    const property = await createObject(session, 'property');
+    await invoke(session, property, 'setAmbient', [0.4]);
+    await invoke(session, property, 'setDiffuse', [0.8]);
+    await invoke(session, property, 'setSpecular', [0.2]);
+    await invoke(session, property, 'setSpecularPower', [18]);
+
+    await assert.rejects(
+      invoke(session, connectivity, 'setConnectivityMode', [
+        'closestPointRegion',
+      ]),
+      /does not support closestPointRegion/,
+    );
+    await assert.rejects(
+      invoke(session, connectivity, 'setClosestPoint', [1, 2, 3]),
+      /unavailable in the vtk\.js backend/,
+    );
+    await assert.rejects(
+      invoke(session, connectivity, 'setColorRegions', [false]),
+      /unavailable in the vtk\.js backend/,
+    );
   } finally {
     await closeSession(session);
   }

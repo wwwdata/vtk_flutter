@@ -2,6 +2,7 @@ import '@kitware/vtk.js/Rendering/Profiles/Geometry.js';
 import '@kitware/vtk.js/Rendering/Profiles/Volume.js';
 
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor.js';
+import vtkBFSConnectivityFilter from '@kitware/vtk.js/Filters/General/BFSConnectivityFilter.js';
 import vtkCamera from '@kitware/vtk.js/Rendering/Core/Camera.js';
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction.js';
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray.js';
@@ -24,6 +25,9 @@ import vtkWindowedSincPolyDataFilter from '@kitware/vtk.js/Filters/General/Windo
 const maximumImageBytes = 256 * 1024 * 1024;
 const captureTimeoutMilliseconds = 15_000;
 
+export const createFlyingEdges3D = () =>
+  vtkImageMarchingCubes.newInstance({ mergePoints: true });
+
 const supportedObjectTypes = Object.freeze([
   'imageData',
   'imageReslice',
@@ -36,6 +40,7 @@ const supportedObjectTypes = Object.freeze([
   'volumeProperty',
   'volume',
   'flyingEdges3D',
+  'polyDataConnectivityFilter',
   'windowedSincPolyDataFilter',
   'polyDataMapper',
   'actor',
@@ -85,7 +90,8 @@ const objectFactories = Object.freeze({
   piecewiseFunction: () => vtkPiecewiseFunction.newInstance(),
   volumeProperty: () => vtkVolumeProperty.newInstance(),
   volume: () => vtkVolume.newInstance(),
-  flyingEdges3D: () => vtkImageMarchingCubes.newInstance(),
+  flyingEdges3D: createFlyingEdges3D,
+  polyDataConnectivityFilter: () => vtkBFSConnectivityFilter.newInstance(),
   windowedSincPolyDataFilter: () =>
     vtkWindowedSincPolyDataFilter.newInstance(),
   polyDataMapper: () => vtkMapper.newInstance(),
@@ -100,6 +106,7 @@ const inputTargets = Object.freeze([
   'imageSliceMapper',
   'smartVolumeMapper',
   'flyingEdges3D',
+  'polyDataConnectivityFilter',
   'windowedSincPolyDataFilter',
   'polyDataMapper',
 ]);
@@ -107,6 +114,7 @@ const inputTargets = Object.freeze([
 const algorithmTargets = Object.freeze([
   'imageReslice',
   'flyingEdges3D',
+  'polyDataConnectivityFilter',
   'windowedSincPolyDataFilter',
 ]);
 
@@ -134,14 +142,14 @@ const operationTargetTypes = Object.freeze({
   setScalarOpacity: ['volumeProperty'],
   setVolumeInterpolation: ['volumeProperty'],
   setShade: ['volumeProperty'],
-  setAmbient: ['volumeProperty'],
-  setDiffuse: ['volumeProperty'],
-  setSpecular: ['volumeProperty'],
-  setSpecularPower: ['volumeProperty'],
+  setAmbient: ['volumeProperty', 'property'],
+  setDiffuse: ['volumeProperty', 'property'],
+  setSpecular: ['volumeProperty', 'property'],
+  setSpecularPower: ['volumeProperty', 'property'],
   setScalarOpacityUnitDistance: ['volumeProperty'],
   setIsoValue: ['flyingEdges3D'],
   setComputeNormals: ['flyingEdges3D'],
-  setConnectivityMode: [],
+  setConnectivityMode: ['polyDataConnectivityFilter'],
   setClosestPoint: [],
   setColorRegions: [],
   setNumberOfIterations: ['windowedSincPolyDataFilter'],
@@ -161,7 +169,7 @@ const operationTargetTypes = Object.freeze({
   setBackground: ['renderer'],
   setActiveCamera: ['renderer'],
   resetCamera: ['renderer'],
-  setPosition: ['camera'],
+  setPosition: ['actor', 'camera'],
   setFocalPoint: ['camera'],
   setViewUp: ['camera'],
   setParallelProjection: ['camera'],
@@ -705,6 +713,18 @@ const invokeOperation = (session, target, operation, args) => {
     case 'setComputeNormals':
       target.instance.setComputeNormals(booleanArgument(args, operation));
       return null;
+    case 'setConnectivityMode': {
+      const mode = enumArgument(args, operation, [
+        'allRegions',
+        'largestRegion',
+      ]);
+      if (mode === 'allRegions') {
+        target.instance.setExtractionModeToAll();
+      } else {
+        target.instance.setExtractionModeToLargest();
+      }
+      return null;
+    }
     case 'setNumberOfIterations':
       target.instance.setNumberOfIterations(
         expectNonNegativeInteger(
@@ -826,7 +846,6 @@ const invokeOperation = (session, target, operation, args) => {
       return null;
     case 'setWindow':
     case 'setLevel':
-    case 'setConnectivityMode':
     case 'setClosestPoint':
     case 'setColorRegions':
       fail(`${operation} is unavailable in the vtk.js backend`);

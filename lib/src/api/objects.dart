@@ -506,6 +506,12 @@ final class VtkActor extends VtkObject {
     operation: .setProperty,
     arguments: [property],
   );
+
+  Future<void> setPosition(VtkVector3 position) => _session._invoke(
+    target: this,
+    operation: .setPosition,
+    arguments: position.values,
+  );
 }
 
 final class VtkProperty extends VtkObject {
@@ -526,6 +532,24 @@ final class VtkProperty extends VtkObject {
     );
   }
 
+  Future<void> setAmbient(double value) =>
+      _setUnitValue(operation: .setAmbient, value: value, field: 'ambient');
+
+  Future<void> setDiffuse(double value) =>
+      _setUnitValue(operation: .setDiffuse, value: value, field: 'diffuse');
+
+  Future<void> setSpecular(double value) =>
+      _setUnitValue(operation: .setSpecular, value: value, field: 'specular');
+
+  Future<void> setSpecularPower(double value) {
+    _validatePositiveDouble(value: value, field: 'specularPower');
+    return _session._invoke(
+      target: this,
+      operation: .setSpecularPower,
+      arguments: [value],
+    );
+  }
+
   Future<void> setRepresentation(VtkRepresentation representation) =>
       _session._invoke(
         target: this,
@@ -539,6 +563,19 @@ final class VtkProperty extends VtkObject {
       target: this,
       operation: .setLineWidth,
       arguments: [width],
+    );
+  }
+
+  Future<void> _setUnitValue({
+    required VtkBackendOperation operation,
+    required double value,
+    required String field,
+  }) {
+    _validateUnitInterval(value: value, field: field);
+    return _session._invoke(
+      target: this,
+      operation: operation,
+      arguments: [value],
     );
   }
 }

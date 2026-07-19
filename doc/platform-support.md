@@ -37,6 +37,8 @@ Web has deliberate limits:
 - it does not load a native artifact or use Dart FFI;
 - only the object and operation subset implemented by the vtk.js backend is
   available;
+- polydata connectivity supports all-region and largest-region extraction, but
+  not closest-point extraction or region coloring;
 - supported scalar types and maximum image bytes may be lower than native;
 - browser WebGL and memory limits can disable rendering at runtime;
 - synchronous native timing and presentation behavior do not map exactly to

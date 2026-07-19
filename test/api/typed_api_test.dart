@@ -223,10 +223,15 @@ void main() {
       final property = await session.createProperty();
       await property.setColor(VtkColor(red: 0.8, green: 0.7, blue: 0.6));
       await property.setOpacity(0.75);
+      await property.setAmbient(0.4);
+      await property.setDiffuse(0.8);
+      await property.setSpecular(0.2);
+      await property.setSpecularPower(18);
       await property.setRepresentation(VtkRepresentation.surface);
       final actor = await session.createActor();
       await actor.setMapper(mapper);
       await actor.setProperty(property);
+      await actor.setPosition(VtkVector3(x: 4, y: 5, z: 6));
 
       final calls = backend.sessions.single.calls;
       expect(_singleCall(calls, .setConnectivityMode).arguments, const [
@@ -235,9 +240,37 @@ void main() {
       expect(_singleCall(calls, .setNumberOfIterations).arguments, const [12]);
       expect(_singleCall(calls, .setPassBand).arguments, const [0.1]);
       expect(_singleCall(calls, .setColor).arguments, const [0.8, 0.7, 0.6]);
+      expect(_singleCall(calls, .setAmbient).arguments, const [0.4]);
+      expect(_singleCall(calls, .setDiffuse).arguments, const [0.8]);
+      expect(_singleCall(calls, .setSpecular).arguments, const [0.2]);
+      expect(_singleCall(calls, .setSpecularPower).arguments, const [18.0]);
+      expect(_singleCall(calls, .setPosition).arguments, const [4.0, 5.0, 6.0]);
       expect(_singleCall(calls, .setRepresentation).arguments, const [
         VtkRepresentation.surface,
       ]);
+    });
+
+    test('validates surface material lighting values', () async {
+      final property = await session.createProperty();
+
+      expect(
+        () => property.setAmbient(-0.1),
+        throwsA(isA<VtkApiValidationException>()),
+      );
+      expect(
+        () => property.setDiffuse(1.1),
+        throwsA(isA<VtkApiValidationException>()),
+      );
+      expect(
+        () => property.setSpecular(double.nan),
+        throwsA(isA<VtkApiValidationException>()),
+      );
+      expect(
+        () => property.setSpecularPower(0),
+        throwsA(isA<VtkApiValidationException>()),
+      );
+
+      expect(backend.sessions.single.calls, isEmpty);
     });
   });
 

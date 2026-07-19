@@ -26,6 +26,7 @@ void main() {
       containsAll(const {
         VtkObjectType.imageData,
         VtkObjectType.flyingEdges3D,
+        VtkObjectType.polyDataConnectivityFilter,
         VtkObjectType.renderer,
       }),
     );
@@ -266,6 +267,7 @@ final class _FakeWebModule implements VtkWebModule {
         supportedObjectTypes: const [
           'imageData',
           'flyingEdges3D',
+          'polyDataConnectivityFilter',
           'renderer',
           'algorithmOutput',
         ],
