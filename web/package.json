@@ -8,9 +8,9 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "@kitware/vtk.js": "36.4.1"
+    "@kitware/vtk.js": "36.5.0"
   },
   "devDependencies": {
-    "esbuild": "0.25.6"
+    "esbuild": "0.28.1"
   }
 }
