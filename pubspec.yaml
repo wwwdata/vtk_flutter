@@ -18,7 +18,7 @@ environment:
 
 dependencies:
   archive: ^4.0.7
-  code_assets: ^1.0.0
+  code_assets: ^1.2.1
   crypto: ^3.0.7
   flutter:
     sdk: flutter
@@ -27,7 +27,7 @@ dependencies:
   web: ^1.0.0
   plugin_platform_interface: ^2.0.2
   ffi: ^2.2.0
-  hooks: ^1.0.0
+  hooks: ^2.0.2
 
 dev_dependencies:
   flutter_test:
