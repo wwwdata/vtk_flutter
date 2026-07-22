@@ -85,6 +85,8 @@ if(include_${PROJECT_NAME}_tests)
       "$<TARGET_FILE_DIR:${TEST_RUNNER}>"
   )
 
-  include(GoogleTest)
-  gtest_discover_tests(${TEST_RUNNER})
+  add_test(NAME ${TEST_RUNNER} COMMAND $<TARGET_FILE:${TEST_RUNNER}>)
+  set_tests_properties(${TEST_RUNNER} PROPERTIES
+    WORKING_DIRECTORY "$<TARGET_FILE_DIR:${TEST_RUNNER}>"
+  )
 endif()

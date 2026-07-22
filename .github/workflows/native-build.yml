@@ -326,16 +326,17 @@ jobs:
           $pubspec.Replace('environment:', "${hook}environment:") |
             Set-Content 'example/pubspec.yaml' -Encoding utf8NoBOM
 
-      - name: Test Android presentation adapter
+      - name: Build Android x64 example
         working-directory: example
         run: |
           flutter pub get
+          flutter build apk --debug --target-platform android-x64
+
+      - name: Test Android presentation adapter
+        working-directory: example
+        run: |
           cd android
           ./gradlew :vtk_flutter:testDebugUnitTest :vtk_flutter:lintDebug :vtk_flutter:assembleDebug
-
-      - name: Build Android x64 example
-        working-directory: example
-        run: flutter build apk --debug --target-platform android-x64
 
       - name: Render two independent sessions on Android
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
