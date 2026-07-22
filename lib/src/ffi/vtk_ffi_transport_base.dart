@@ -3,51 +3,51 @@ import '../api/vtk_api.dart';
 abstract interface class VtkFfiTransport {
   int get presentationApiAddress;
 
-  Future<int> createSession();
+  int createSession();
 
-  Future<void> destroySession(int sessionAddress);
+  void destroySession(int sessionAddress);
 
-  Future<VtkBackendObjectHandle> createObject({
+  VtkBackendObjectHandle createObject({
     required int sessionAddress,
     required VtkObjectType type,
   });
 
-  Future<VtkBackendObjectHandle> createDynamicObject({
+  VtkBackendObjectHandle createDynamicObject({
     required int sessionAddress,
     required String className,
   });
 
-  Future<VtkBackendObjectHandle> createImageData({
+  VtkBackendObjectHandle createImageData({
     required int sessionAddress,
     required VtkScalarImageInput input,
   });
 
-  Future<Object?> invoke({
+  Object? invoke({
     required int sessionAddress,
     required VtkBackendObjectHandle target,
     required VtkBackendOperation operation,
     required List<Object?> arguments,
   });
 
-  Future<Object?> invokeDynamic({
+  Object? invokeDynamic({
     required int sessionAddress,
     required VtkBackendObjectHandle target,
     required String methodName,
     required List<Object?> arguments,
   });
 
-  Future<void> destroyObject({
+  void destroyObject({
     required int sessionAddress,
     required VtkBackendObjectHandle object,
   });
 
-  Future<VtkRenderResult> render({
+  VtkRenderResult render({
     required int sessionAddress,
     required VtkBackendObjectHandle renderer,
     required VtkViewport viewport,
   });
 
-  Future<VtkRenderResult> renderLayout({
+  VtkRenderResult renderLayout({
     required int sessionAddress,
     required List<VtkBackendRenderLayer> layers,
     required VtkViewport viewport,

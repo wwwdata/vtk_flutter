@@ -43,17 +43,26 @@ by Dart:
 
 The C++ core owns every VTK object. Handles are session-local, never expose a
 VTK pointer, and become invalid when destroyed or when their session closes.
-Calls on one session are serialized, and render-thread requirements remain in
-the native implementation.
+Calls on one session are serialized by that session. The registry retains a
+live session only while resolving its opaque address, then releases its global
+lock before the operation so independent sessions can make progress safely.
+Render-thread requirements remain in the native implementation.
+
+On native platforms, each Dart session has a persistent executor isolate. The
+worker creates, invokes, renders, and destroys only its bound native session;
+raw pointers never cross isolates, and the root isolate receives only opaque
+integer addresses for presentation routing. Platform-channel work stays on the
+root isolate. Closing first disposes the platform view while the native session
+is still live, then drains and destroys the worker-owned session.
 
 A layout render uses one render window, one graphics context, one frame
 transaction, and one Flutter texture. All renderer handles and normalized
 viewports are validated before the render window is mutated. The complete
 target is cleared, all renderers are attached, VTK renders and reads back once,
 and every renderer is detached on success or failure. The frame transform is
-captured from an explicitly selected primary renderer. This is deliberately
-different from independent multi-session surfaces, which remain outside the
-current platform adapter contract.
+captured from an explicitly selected primary renderer. This atomic layout is
+independent of the multi-session contract: every native session also owns a
+separately addressed presentation target and Flutter texture.
 
 VTK is a C++ library and does not expose a stable C ABI that Dart FFI can call
 directly. The small C++ session is therefore the irreducible adapter: it owns
@@ -64,7 +73,8 @@ arguments are backend implementation details, not the stable Dart contract.
 ## Presentation-only platform adapters
 
 The Android, iOS, macOS, and Windows plugins receive the native presentation
-function table and work with an opaque session. Their responsibilities are:
+function table and work with opaque sessions. They keep per-session view state
+keyed by native session identity. Their responsibilities are:
 
 - register and unregister a Flutter texture;
 - allocate or acquire writable frame storage;
@@ -72,6 +82,12 @@ function table and work with an opaque session. Their responsibilities are:
 - publish a completed frame and notify Flutter;
 - cancel an incomplete frame safely; and
 - coordinate platform lifecycle and thread affinity.
+
+Creating the same session view repeatedly is idempotent, while different
+sessions receive distinct texture registrations. Resize, publish, graphics
+context recreation, and disposal are routed only to the addressed view.
+Incomplete creation and teardown state remains owned until cleanup succeeds so
+failures can be surfaced and retried without affecting another session.
 
 They do not link a second VTK copy, create VTK pipelines, interpret application
 data, or choose visualization behavior. The native core writes through a

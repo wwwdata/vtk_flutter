@@ -1,5 +1,5 @@
 const nativeReleaseRepository = 'wwwdata/vtk_flutter';
-const nativeReleaseTag = 'native-v0.2.0-dev.2';
+const nativeReleaseTag = 'native-v0.2.0-dev.3';
 const nativeChecksumManifestName = 'SHA256SUMS';
 
 const nativeReleaseArtifacts = <String, String>{

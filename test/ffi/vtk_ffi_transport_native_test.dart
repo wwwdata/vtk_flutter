@@ -170,7 +170,7 @@ void main() {
           },
     );
 
-    final result = await transport.renderLayout(
+    final result = transport.renderLayout(
       sessionAddress: 123,
       layers: [
         VtkBackendRenderLayer(
@@ -230,7 +230,7 @@ void main() {
           },
     );
 
-    await transport.render(
+    transport.render(
       sessionAddress: 123,
       renderer: const VtkBackendObjectHandle(11),
       viewport: VtkViewport(width: 2, height: 2),
@@ -256,8 +256,8 @@ void main() {
           },
     );
 
-    await expectLater(
-      transport.renderLayout(
+    expect(
+      () => transport.renderLayout(
         sessionAddress: 123,
         layers: const [],
         viewport: VtkViewport(width: 2, height: 2),
@@ -265,8 +265,8 @@ void main() {
       ),
       throwsA(isA<VtkApiValidationException>()),
     );
-    await expectLater(
-      transport.renderLayout(
+    expect(
+      () => transport.renderLayout(
         sessionAddress: 123,
         layers: [
           for (var index = 0; index <= VTK_FLUTTER_MAX_RENDER_LAYERS; index++)

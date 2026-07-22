@@ -3,10 +3,27 @@
 
 #include <flutter/method_channel.h>
 #include <flutter/plugin_registrar_windows.h>
+#include <flutter/texture_registrar.h>
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace vtk_flutter {
+
+class WindowsVtkViewHost {
+public:
+  virtual ~WindowsVtkViewHost() = default;
+
+  virtual bool IsAvailable() const noexcept = 0;
+  virtual bool IsOnPlatformThread() const noexcept = 0;
+  virtual std::int64_t RegisterTexture(flutter::TextureVariant *texture) = 0;
+  virtual bool MarkTextureFrameAvailable(std::int64_t texture_id) = 0;
+  virtual void UnregisterTexture(std::int64_t texture_id,
+                                 std::function<void()> callback) = 0;
+  virtual bool PostToPlatform(std::function<void()> operation) = 0;
+  virtual void DrainPlatformOperations() = 0;
+};
 
 class VtkFlutterPlugin : public flutter::Plugin {
 public:
@@ -14,6 +31,7 @@ public:
 
   explicit VtkFlutterPlugin(
       flutter::PluginRegistrarWindows *registrar = nullptr);
+  explicit VtkFlutterPlugin(std::unique_ptr<WindowsVtkViewHost> view_host);
   ~VtkFlutterPlugin() override;
 
   VtkFlutterPlugin(const VtkFlutterPlugin &) = delete;

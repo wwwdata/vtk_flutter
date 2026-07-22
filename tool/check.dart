@@ -15,6 +15,7 @@ Checks:
 With --full:
   fvm flutter build web
   Native CMake configure, build, and contract tests (macOS/Windows hosts)
+  Platform presentation-adapter tests (Apple on macOS, Windows on Windows)
   Host desktop example build and render integration test
 ''';
 
@@ -145,11 +146,31 @@ List<CheckCommand> createChecks({
       ],
       workingDirectory: null,
     ),
+    if (host == 'macos') ...[
+      for (final platform in ['macos', 'ios'])
+        (
+          executable: 'bash',
+          arguments: ['tool/test_apple_adapter.sh', platform],
+          workingDirectory: null,
+        ),
+    ],
     (
       executable: 'fvm',
       arguments: ['flutter', 'build', host, '--debug'],
       workingDirectory: 'example',
     ),
+    if (host == 'windows')
+      (
+        executable: 'ctest',
+        arguments: [
+          '--test-dir',
+          'build/windows/x64/plugins/vtk_flutter',
+          '-C',
+          'Debug',
+          '--output-on-failure',
+        ],
+        workingDirectory: 'example',
+      ),
     (
       executable: 'fvm',
       arguments: [

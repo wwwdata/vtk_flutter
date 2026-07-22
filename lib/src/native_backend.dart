@@ -1,17 +1,23 @@
+import 'dart:async';
+
 import 'api/vtk_api.dart';
-import 'ffi/vtk_ffi_transport.dart';
+import 'ffi/vtk_session_executor.dart';
 import 'vtk_flutter_platform_interface.dart';
 
 VtkBackend createDefaultVtkBackend() => VtkNativeBackend();
 
 final class VtkNativeBackend implements VtkBackend {
-  VtkNativeBackend({VtkFfiTransport? transport, VtkFlutterPlatform? platform})
-    : _transport = transport ?? _requiredTransport(),
-      _platform = platform ?? VtkFlutterPlatform.instance;
+  VtkNativeBackend({
+    VtkSessionExecutorFactory? executorFactory,
+    VtkFlutterPlatform? platform,
+  }) : _executorFactory = executorFactory ?? _requiredExecutorFactory(),
+       _platform = platform ?? VtkFlutterPlatform.instance;
 
-  final VtkFfiTransport _transport;
+  final VtkSessionExecutorFactory _executorFactory;
   final VtkFlutterPlatform _platform;
-  VtkNativeBackendSession? _activeSession;
+  final Map<int, VtkNativeBackendSession> _sessions = {};
+  int _openingSessionCount = 0;
+  Completer<void>? _openingSessionsDrained;
   Future<void>? _closeOperation;
   bool _closeStarted = false;
   bool _closed = false;
@@ -30,54 +36,78 @@ final class VtkNativeBackend implements VtkBackend {
   @override
   Future<VtkBackendSession> openSession() async {
     _ensureOpen();
-    if (_activeSession != null) {
+    if (!_platform.supportsIndependentSessionViews &&
+        (_openingSessionCount > 0 || _sessions.isNotEmpty)) {
       throw const VtkApiStateException(
         'The native backend supports one active presentation session',
       );
     }
-
-    final address = await _transport.createSession();
-    final viewport = VtkViewport(width: 1, height: 1);
+    _openingSessionCount++;
     try {
-      final viewId = await _platform.createView(
-        viewport: viewport,
-        presentationApiAddress: _transport.presentationApiAddress,
-        nativeSessionAddress: address,
-      );
-      late final VtkNativeBackendSession session;
-      session = VtkNativeBackendSession(
-        transport: _transport,
-        platform: _platform,
-        sessionAddress: address,
-        viewId: viewId,
-        viewport: viewport,
-        onClosed: () {
-          if (identical(_activeSession, session)) _activeSession = null;
-        },
-      );
-      _activeSession = session;
-      return session;
-    } on Object catch (error, stackTrace) {
-      late final VtkNativeBackendSession cleanupSession;
-      cleanupSession = VtkNativeBackendSession(
-        transport: _transport,
-        platform: _platform,
-        sessionAddress: address,
-        viewId: 0,
-        viewport: viewport,
-        onClosed: () {
-          if (identical(_activeSession, cleanupSession)) {
-            _activeSession = null;
-          }
-        },
-      );
-      _activeSession = cleanupSession;
+      final executor = await _executorFactory.create();
+      final address = executor.nativeSessionAddress;
+      final viewport = VtkViewport(width: 1, height: 1);
       try {
-        await cleanupSession.close();
-      } on Object {
-        // The retained cleanup session lets backend.close() retry safely.
+        _ensureOpen();
+        final viewId = await _platform.createView(
+          viewport: viewport,
+          presentationApiAddress: executor.presentationApiAddress,
+          nativeSessionAddress: address,
+        );
+        _ensureOpen();
+        late final VtkNativeBackendSession session;
+        session = VtkNativeBackendSession(
+          executor: executor,
+          platform: _platform,
+          sessionAddress: address,
+          viewId: viewId,
+          viewport: viewport,
+          onClosed: () {
+            if (identical(_sessions[address], session)) {
+              _sessions.remove(address);
+            }
+          },
+        );
+        _sessions[address] = session;
+        return session;
+      } on Object catch (error, stackTrace) {
+        late final VtkNativeBackendSession cleanupSession;
+        cleanupSession = VtkNativeBackendSession(
+          executor: executor,
+          platform: _platform,
+          sessionAddress: address,
+          viewId: 0,
+          viewport: viewport,
+          onClosed: () {
+            if (identical(_sessions[address], cleanupSession)) {
+              _sessions.remove(address);
+            }
+          },
+        );
+        _sessions[address] = cleanupSession;
+        try {
+          await cleanupSession.close();
+        } on Object catch (cleanupError, cleanupStackTrace) {
+          final combinedError = VtkApiStateException(
+            'Native presentation view creation failed: $error. '
+            'Its retained cleanup also failed and will be retried when the '
+            'backend closes: $cleanupError',
+          );
+          Error.throwWithStackTrace(
+            combinedError,
+            StackTrace.fromString(
+              '$stackTrace\nCleanup failure:\n$cleanupStackTrace',
+            ),
+          );
+        }
+        Error.throwWithStackTrace(error, stackTrace);
       }
-      Error.throwWithStackTrace(error, stackTrace);
+    } finally {
+      _openingSessionCount--;
+      if (_openingSessionCount == 0) {
+        _openingSessionsDrained?.complete();
+        _openingSessionsDrained = null;
+      }
     }
   }
 
@@ -88,7 +118,7 @@ final class VtkNativeBackend implements VtkBackend {
     if (currentClose != null) return currentClose;
 
     _closeStarted = true;
-    final operation = _activeSession?.close() ?? Future<void>.value();
+    final operation = _closeSessions();
     _closeOperation = operation;
     try {
       await operation;
@@ -96,6 +126,29 @@ final class VtkNativeBackend implements VtkBackend {
     } on Object {
       _closeOperation = null;
       rethrow;
+    }
+  }
+
+  Future<void> _closeSessions() async {
+    if (_openingSessionCount > 0) {
+      final drained = _openingSessionsDrained ??= Completer<void>();
+      await drained.future;
+    }
+    Object? firstError;
+    StackTrace? firstStackTrace;
+    for (final session in [..._sessions.values]) {
+      try {
+        await session.close();
+      } on Object catch (error, stackTrace) {
+        firstError ??= error;
+        firstStackTrace ??= stackTrace;
+      }
+    }
+    if ((firstError, firstStackTrace) case (
+      final Object error,
+      final StackTrace stackTrace,
+    )) {
+      Error.throwWithStackTrace(error, stackTrace);
     }
   }
 
@@ -109,7 +162,7 @@ final class VtkNativeBackend implements VtkBackend {
 final class VtkNativeBackendSession
     implements VtkBackendSession, VtkDynamicBackendSession {
   VtkNativeBackendSession({
-    required this._transport,
+    required this._executor,
     required this._platform,
     required this._sessionAddress,
     required this.viewId,
@@ -117,7 +170,7 @@ final class VtkNativeBackendSession
     required this._onClosed,
   });
 
-  final VtkFfiTransport _transport;
+  final VtkSessionExecutor _executor;
   final VtkFlutterPlatform _platform;
   final int _sessionAddress;
   final void Function() _onClosed;
@@ -135,7 +188,7 @@ final class VtkNativeBackendSession
   @override
   Future<VtkBackendObjectHandle> createObject({required VtkObjectType type}) {
     _ensureOpen();
-    return _transport.createObject(sessionAddress: _sessionAddress, type: type);
+    return _executor.createObject(type: type);
   }
 
   @override
@@ -143,10 +196,7 @@ final class VtkNativeBackendSession
     required String className,
   }) {
     _ensureOpen();
-    return _transport.createDynamicObject(
-      sessionAddress: _sessionAddress,
-      className: className,
-    );
+    return _executor.createDynamicObject(className: className);
   }
 
   @override
@@ -154,10 +204,7 @@ final class VtkNativeBackendSession
     required VtkScalarImageInput input,
   }) {
     _ensureOpen();
-    return _transport.createImageData(
-      sessionAddress: _sessionAddress,
-      input: input,
-    );
+    return _executor.createImageData(input: input);
   }
 
   @override
@@ -167,8 +214,7 @@ final class VtkNativeBackendSession
     List<Object?> arguments = const [],
   }) {
     _ensureOpen();
-    return _transport.invoke(
-      sessionAddress: _sessionAddress,
+    return _executor.invoke(
       target: target,
       operation: operation,
       arguments: arguments,
@@ -182,8 +228,7 @@ final class VtkNativeBackendSession
     List<Object?> arguments = const [],
   }) {
     _ensureOpen();
-    return _transport.invokeDynamic(
-      sessionAddress: _sessionAddress,
+    return _executor.invokeDynamic(
       target: target,
       methodName: methodName,
       arguments: arguments,
@@ -193,10 +238,7 @@ final class VtkNativeBackendSession
   @override
   Future<void> destroyObject({required VtkBackendObjectHandle object}) {
     _ensureOpen();
-    return _transport.destroyObject(
-      sessionAddress: _sessionAddress,
-      object: object,
-    );
+    return _executor.destroyObject(object: object);
   }
 
   @override
@@ -222,16 +264,18 @@ final class VtkNativeBackendSession
   }) async {
     _ensureOpen();
     if (_viewport != viewport) {
-      await _platform.resize(viewport);
+      await _platform.resize(
+        nativeSessionAddress: _sessionAddress,
+        viewport: viewport,
+      );
       _viewport = viewport;
     }
-    final result = await _transport.renderLayout(
-      sessionAddress: _sessionAddress,
+    final result = await _executor.renderLayout(
       layers: layers,
       viewport: viewport,
       primaryLayer: primaryLayer,
     );
-    await _platform.presentFrame();
+    await _platform.presentFrame(nativeSessionAddress: _sessionAddress);
     return result;
   }
 
@@ -256,11 +300,11 @@ final class VtkNativeBackendSession
 
   Future<void> _closeResources() async {
     if (!_viewDisposed) {
-      await _platform.disposeView();
+      await _platform.disposeView(nativeSessionAddress: _sessionAddress);
       _viewDisposed = true;
     }
     if (!_sessionDestroyed) {
-      await _transport.destroySession(_sessionAddress);
+      await _executor.close();
       _sessionDestroyed = true;
     }
   }
@@ -272,12 +316,12 @@ final class VtkNativeBackendSession
   }
 }
 
-VtkFfiTransport _requiredTransport() {
-  final transport = createDefaultVtkFfiTransport();
-  if (transport == null) {
+VtkSessionExecutorFactory _requiredExecutorFactory() {
+  final factory = createDefaultVtkSessionExecutorFactory();
+  if (factory == null) {
     throw const VtkApiStateException(
       'Dart FFI is unavailable on this platform',
     );
   }
-  return transport;
+  return factory;
 }

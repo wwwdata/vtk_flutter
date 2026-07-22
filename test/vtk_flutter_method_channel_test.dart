@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vtk_flutter/src/api/vtk_api.dart';
@@ -45,6 +46,35 @@ void main() {
     );
   });
 
+  test('advertises independent session views on native plugin platforms', () {
+    try {
+      for (final platform in [
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+        TargetPlatform.macOS,
+        TargetPlatform.windows,
+      ]) {
+        debugDefaultTargetPlatformOverride = platform;
+        expect(
+          MethodChannelVtkFlutter().supportsIndependentSessionViews,
+          isTrue,
+          reason: '$platform',
+        );
+      }
+
+      for (final platform in [TargetPlatform.linux, TargetPlatform.fuchsia]) {
+        debugDefaultTargetPlatformOverride = platform;
+        expect(
+          MethodChannelVtkFlutter().supportsIndependentSessionViews,
+          isFalse,
+          reason: '$platform',
+        );
+      }
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
+    }
+  });
+
   test('passes only opaque session data and presentation lifecycle', () async {
     final platform = MethodChannelVtkFlutter();
     final viewport = VtkViewport(width: 640, height: 320);
@@ -54,9 +84,12 @@ void main() {
       presentationApiAddress: 2048,
       nativeSessionAddress: 4096,
     );
-    await platform.presentFrame();
-    await platform.resize(VtkViewport(width: 800, height: 600));
-    await platform.disposeView();
+    await platform.presentFrame(nativeSessionAddress: 4096);
+    await platform.resize(
+      nativeSessionAddress: 4096,
+      viewport: VtkViewport(width: 800, height: 600),
+    );
+    await platform.disposeView(nativeSessionAddress: 4096);
 
     expect(textureId, 42);
     expect(calls.map((call) => call.method), [
@@ -71,7 +104,13 @@ void main() {
       'presentationApiAddress': 2048,
       'nativeSessionAddress': 4096,
     });
-    expect(calls[2].arguments, {'width': 800, 'height': 600});
+    expect(calls[1].arguments, {'nativeSessionAddress': 4096});
+    expect(calls[2].arguments, {
+      'nativeSessionAddress': 4096,
+      'width': 800,
+      'height': 600,
+    });
+    expect(calls[3].arguments, {'nativeSessionAddress': 4096});
   });
 
   test('rejects malformed texture identifiers', () async {
@@ -103,7 +142,7 @@ void main() {
           });
 
       await expectLater(
-        MethodChannelVtkFlutter().disposeView(),
+        MethodChannelVtkFlutter().disposeView(nativeSessionAddress: 4096),
         throwsA(
           isA<VtkApiStateException>().having(
             (error) => error.message,
@@ -119,7 +158,7 @@ void main() {
             (call) async => throw MissingPluginException(),
           );
       await expectLater(
-        MethodChannelVtkFlutter().disposeView(),
+        MethodChannelVtkFlutter().disposeView(nativeSessionAddress: 4096),
         throwsA(isA<VtkApiStateException>()),
       );
     },

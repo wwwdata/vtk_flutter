@@ -46,7 +46,7 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
   }
 
   @override
-  Future<int> createSession() async {
+  int createSession() {
     _validateBindings();
     final outSession = calloc<Pointer<VtkFlutterSession>>();
     final status = calloc<VtkFlutterStatus>();
@@ -67,7 +67,7 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
   }
 
   @override
-  Future<void> destroySession(int sessionAddress) async {
+  void destroySession(int sessionAddress) {
     if (sessionAddress <= 0) return;
     _validateBindings();
     vtk_flutter_session_destroy(
@@ -76,7 +76,7 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
   }
 
   @override
-  Future<VtkBackendObjectHandle> createObject({
+  VtkBackendObjectHandle createObject({
     required int sessionAddress,
     required VtkObjectType type,
   }) {
@@ -91,10 +91,10 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
   }
 
   @override
-  Future<VtkBackendObjectHandle> createDynamicObject({
+  VtkBackendObjectHandle createDynamicObject({
     required int sessionAddress,
     required String className,
-  }) async {
+  }) {
     final nativeClassName = className.toNativeUtf8();
     final outObject = calloc<Uint32>();
     final status = calloc<VtkFlutterStatus>();
@@ -116,10 +116,10 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
   }
 
   @override
-  Future<VtkBackendObjectHandle> createImageData({
+  VtkBackendObjectHandle createImageData({
     required int sessionAddress,
     required VtkScalarImageInput input,
-  }) async {
+  }) {
     final image = calloc<VtkFlutterImageData>();
     final values = calloc<Uint8>(input.byteCount);
     final outObject = calloc<Uint32>();
@@ -159,18 +159,18 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
   }
 
   @override
-  Future<Object?> invoke({
+  Object? invoke({
     required int sessionAddress,
     required VtkBackendObjectHandle target,
     required VtkBackendOperation operation,
     required List<Object?> arguments,
-  }) async {
+  }) {
     Object? result;
     for (final invocation in createVtkNativeInvocations(
       operation: operation,
       arguments: arguments,
     )) {
-      result = await invokeDynamic(
+      result = invokeDynamic(
         sessionAddress: sessionAddress,
         target: target,
         methodName: invocation.method,
@@ -181,12 +181,12 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
   }
 
   @override
-  Future<Object?> invokeDynamic({
+  Object? invokeDynamic({
     required int sessionAddress,
     required VtkBackendObjectHandle target,
     required String methodName,
     required List<Object?> arguments,
-  }) async {
+  }) {
     final nativeMethodName = methodName.toNativeUtf8();
     final encodedArguments = jsonEncode(
       arguments.map(encodeVtkNativeArgument).toList(growable: false),
@@ -226,10 +226,10 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
   }
 
   @override
-  Future<void> destroyObject({
+  void destroyObject({
     required int sessionAddress,
     required VtkBackendObjectHandle object,
-  }) async {
+  }) {
     final status = calloc<VtkFlutterStatus>();
     try {
       _validateBindings();
@@ -245,7 +245,7 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
   }
 
   @override
-  Future<VtkRenderResult> render({
+  VtkRenderResult render({
     required int sessionAddress,
     required VtkBackendObjectHandle renderer,
     required VtkViewport viewport,
@@ -262,12 +262,12 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
   );
 
   @override
-  Future<VtkRenderResult> renderLayout({
+  VtkRenderResult renderLayout({
     required int sessionAddress,
     required List<VtkBackendRenderLayer> layers,
     required VtkViewport viewport,
     required int primaryLayer,
-  }) async {
+  }) {
     _validateRenderLayout(layers: layers, primaryLayer: primaryLayer);
     final nativeLayers = calloc<VtkFlutterRenderLayer>(layers.length);
     final nativeViewport = calloc<VtkFlutterViewport>();

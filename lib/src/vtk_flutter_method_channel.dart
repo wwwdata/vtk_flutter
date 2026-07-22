@@ -9,6 +9,14 @@ final class MethodChannelVtkFlutter extends VtkFlutterPlatform {
   final methodChannel = const MethodChannel('vtk_flutter/session');
 
   @override
+  bool get supportsIndependentSessionViews =>
+      !kIsWeb &&
+      switch (defaultTargetPlatform) {
+        .android || .iOS || .macOS || .windows => true,
+        .fuchsia || .linux => false,
+      };
+
+  @override
   Future<int> createView({
     required VtkViewport viewport,
     required int presentationApiAddress,
@@ -33,16 +41,29 @@ final class MethodChannelVtkFlutter extends VtkFlutterPlatform {
   }
 
   @override
-  Future<void> presentFrame() => _invokeMap(method: 'presentFrame');
-
-  @override
-  Future<void> resize(VtkViewport viewport) => _invokeVoid(
-    method: 'resize',
-    arguments: {'width': viewport.width, 'height': viewport.height},
+  Future<void> presentFrame({required int nativeSessionAddress}) => _invokeMap(
+    method: 'presentFrame',
+    arguments: {'nativeSessionAddress': nativeSessionAddress},
   );
 
   @override
-  Future<void> disposeView() => _invokeVoid(method: 'disposeView');
+  Future<void> resize({
+    required int nativeSessionAddress,
+    required VtkViewport viewport,
+  }) => _invokeVoid(
+    method: 'resize',
+    arguments: {
+      'nativeSessionAddress': nativeSessionAddress,
+      'width': viewport.width,
+      'height': viewport.height,
+    },
+  );
+
+  @override
+  Future<void> disposeView({required int nativeSessionAddress}) => _invokeVoid(
+    method: 'disposeView',
+    arguments: {'nativeSessionAddress': nativeSessionAddress},
+  );
 
   Future<Map<Object?, Object?>> _invokeMap({
     required String method,

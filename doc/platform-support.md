@@ -22,6 +22,11 @@ test on suitable hardware.
 These are the complete nine native artifact targets plus Web. Linux is not
 implemented.
 
+Android, iOS, macOS, and Windows presentation adapters support multiple live
+native sessions. Each session has independently addressed texture, frame,
+viewport, and lifecycle state. Web sessions are managed by the vtk.js backend
+and do not use the native presentation-adapter contract.
+
 ## Capability rules
 
 Callers must query `VtkCapabilities` and treat it as the source of truth.

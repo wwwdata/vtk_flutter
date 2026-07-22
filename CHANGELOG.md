@@ -13,6 +13,8 @@
   native artifact releases. The package remains unpublished.
 - Add atomic, disjoint multi-renderer layouts within one session, render
   window, frame transaction, and Flutter texture.
+- Add independently addressed native sessions with per-session execution,
+  presentation textures, lifecycle isolation, and safe concurrent ownership.
 
 ## 0.1.0-dev.1 (unpublished)
 

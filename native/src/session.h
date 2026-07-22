@@ -7,6 +7,9 @@
 #include <vtkSmartPointer.h>
 
 #include <cstdint>
+#if defined(VTK_FLUTTER_BUILD_TESTING)
+#include <functional>
+#endif
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -106,5 +109,20 @@ private:
 struct VtkFlutterSession {
   vtk_flutter::Session value;
 };
+
+#if defined(VTK_FLUTTER_BUILD_TESTING)
+namespace vtk_flutter::testing {
+enum class SessionLifecyclePhase { construction, destruction };
+enum class SessionLifecycleMoment { waiting, contended, entered };
+using SessionLifecycleHook = void (*)(SessionLifecyclePhase,
+                                      SessionLifecycleMoment);
+
+void SetSessionLifecycleHook(SessionLifecycleHook hook);
+
+int32_t WithLiveSession(
+    VtkFlutterSession *session, VtkFlutterStatus *status,
+    const std::function<void(vtk_flutter::Session &)> &action);
+} // namespace vtk_flutter::testing
+#endif
 
 #endif // VTK_FLUTTER_SESSION_H_

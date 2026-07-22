@@ -116,6 +116,11 @@ install(FILES include/vtk_flutter.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 include(CTest)
 if(BUILD_TESTING)
+  target_compile_definitions(
+    vtk_flutter_core
+    PRIVATE VTK_FLUTTER_BUILD_TESTING
+  )
+
   add_library(vtk_flutter_public_header_contract OBJECT test/public_header_contract.c)
   target_compile_features(vtk_flutter_public_header_contract PRIVATE c_std_11)
   target_compile_definitions(
@@ -131,6 +136,10 @@ if(BUILD_TESTING)
     $<TARGET_OBJECTS:vtk_flutter_public_header_contract>
   )
   target_compile_features(vtk_flutter_core_contract_test PRIVATE cxx_std_20)
+  target_compile_definitions(
+    vtk_flutter_core_contract_test
+    PRIVATE VTK_FLUTTER_BUILD_TESTING
+  )
   target_include_directories(vtk_flutter_core_contract_test PRIVATE include src)
   target_link_libraries(vtk_flutter_core_contract_test PRIVATE vtk_flutter_core)
   vtk_flutter_enable_warnings(vtk_flutter_core_contract_test)
@@ -145,6 +154,8 @@ if(BUILD_TESTING)
     cpu_frame_copy
     generic_session
     public_header
+    session_concurrency
+    session_lifecycle
   )
   if(VTK_FLUTTER_TEST_REAL_RENDERING)
     list(

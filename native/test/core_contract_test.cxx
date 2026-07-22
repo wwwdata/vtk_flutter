@@ -1,4 +1,5 @@
 #include "callback_render_target.h"
+#include "session.h"
 #include "vtk_flutter.h"
 
 // clang-format off
@@ -8,14 +9,21 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <barrier>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 extern "C" int vtk_flutter_public_header_contract(void);
@@ -226,6 +234,245 @@ void TestGenericSession() {
   status = {};
   RequireOk(vtk_flutter_object_destroy(session.value, renderer, &status),
             status, "idempotent object destroy");
+}
+
+void TestSessionConcurrency() {
+  using namespace std::chrono_literals;
+
+  auto first = CreateSession();
+  auto second = CreateSession();
+  std::promise<void> first_entered;
+  std::promise<void> release_first;
+  auto first_entered_future = first_entered.get_future();
+  auto release_first_future = release_first.get_future().share();
+  int32_t first_result = VTK_FLUTTER_STATUS_INTERNAL_ERROR;
+  VtkFlutterStatus first_status{};
+  std::thread first_operation([&] {
+    first_result = vtk_flutter::testing::WithLiveSession(
+        first.value, &first_status, [&](vtk_flutter::Session &) {
+          first_entered.set_value();
+          release_first_future.wait();
+        });
+  });
+
+  if (first_entered_future.wait_for(2s) != std::future_status::ready) {
+    release_first.set_value();
+    first_operation.join();
+    throw std::runtime_error("first session operation did not start");
+  }
+
+  std::promise<void> second_entered;
+  auto second_entered_future = second_entered.get_future();
+  int32_t second_result = VTK_FLUTTER_STATUS_INTERNAL_ERROR;
+  VtkFlutterStatus second_status{};
+  std::thread second_operation([&] {
+    second_result = vtk_flutter::testing::WithLiveSession(
+        second.value, &second_status,
+        [&](vtk_flutter::Session &) { second_entered.set_value(); });
+  });
+
+  const auto sessions_overlapped =
+      second_entered_future.wait_for(2s) == std::future_status::ready;
+  release_first.set_value();
+  first_operation.join();
+  second_operation.join();
+
+  Require(sessions_overlapped,
+          "an operation on one session blocked another session");
+  RequireOk(first_result, first_status, "first concurrent operation");
+  RequireOk(second_result, second_status, "second concurrent operation");
+
+  auto lifetime_session = CreateSession();
+  auto *lifetime_handle = lifetime_session.value;
+  lifetime_session.value = nullptr;
+  std::promise<void> lifetime_entered;
+  std::promise<void> release_lifetime;
+  auto lifetime_entered_future = lifetime_entered.get_future();
+  auto release_lifetime_future = release_lifetime.get_future().share();
+  VtkFlutterObjectHandle created_after_destroy = 0;
+  int32_t lifetime_result = VTK_FLUTTER_STATUS_INTERNAL_ERROR;
+  VtkFlutterStatus lifetime_status{};
+  std::thread lifetime_operation([&] {
+    lifetime_result = vtk_flutter::testing::WithLiveSession(
+        lifetime_handle, &lifetime_status, [&](vtk_flutter::Session &session) {
+          lifetime_entered.set_value();
+          release_lifetime_future.wait();
+          created_after_destroy = session.CreateObject("vtkActor");
+        });
+  });
+
+  if (lifetime_entered_future.wait_for(2s) != std::future_status::ready) {
+    release_lifetime.set_value();
+    lifetime_operation.join();
+    vtk_flutter_session_destroy(lifetime_handle);
+    throw std::runtime_error("lifetime test operation did not start");
+  }
+
+  std::promise<void> destroy_returned;
+  auto destroy_returned_future = destroy_returned.get_future();
+  std::thread destroy([&] {
+    vtk_flutter_session_destroy(lifetime_handle);
+    destroy_returned.set_value();
+  });
+  const auto destroyed_while_in_flight =
+      destroy_returned_future.wait_for(2s) == std::future_status::ready;
+
+  VtkFlutterStatus invalid_status{};
+  const auto invalid_result =
+      destroyed_while_in_flight
+          ? vtk_flutter::testing::WithLiveSession(
+                lifetime_handle, &invalid_status, [](vtk_flutter::Session &) {})
+          : VTK_FLUTTER_STATUS_OK;
+  release_lifetime.set_value();
+  lifetime_operation.join();
+  destroy.join();
+
+  Require(destroyed_while_in_flight,
+          "session destroy waited for an in-flight operation");
+  Require(invalid_result == VTK_FLUTTER_STATUS_INVALID_STATE,
+          "destroyed session accepted a new operation");
+  RequireOk(lifetime_result, lifetime_status,
+            "operation retained across session destroy");
+  Require(created_after_destroy != 0,
+          "in-flight operation lost its session during destroy");
+}
+
+struct SessionLifecycleBarrier {
+  explicit SessionLifecycleBarrier(
+      vtk_flutter::testing::SessionLifecyclePhase lifecycle_phase)
+      : phase(lifecycle_phase) {}
+
+  vtk_flutter::testing::SessionLifecyclePhase phase;
+  std::mutex mutex;
+  std::condition_variable condition;
+  int waiting = 0;
+  int contended = 0;
+  int entered = 0;
+  bool release = false;
+};
+
+SessionLifecycleBarrier *g_session_lifecycle_barrier = nullptr;
+
+void SessionLifecycleHook(vtk_flutter::testing::SessionLifecyclePhase phase,
+                          vtk_flutter::testing::SessionLifecycleMoment moment) {
+  auto *barrier = g_session_lifecycle_barrier;
+  if (barrier == nullptr || barrier->phase != phase) {
+    return;
+  }
+  std::unique_lock lock(barrier->mutex);
+  if (moment == vtk_flutter::testing::SessionLifecycleMoment::waiting) {
+    ++barrier->waiting;
+    barrier->condition.notify_all();
+    return;
+  }
+  if (moment == vtk_flutter::testing::SessionLifecycleMoment::contended) {
+    ++barrier->contended;
+    barrier->condition.notify_all();
+    return;
+  }
+  ++barrier->entered;
+  barrier->condition.notify_all();
+  if (barrier->entered == 1) {
+    barrier->condition.wait(lock, [&] { return barrier->release; });
+  }
+}
+
+template <typename First, typename Second>
+void RequireSerializedLifecycle(
+    vtk_flutter::testing::SessionLifecyclePhase phase, First first,
+    Second second, std::string_view message) {
+  using namespace std::chrono_literals;
+
+  SessionLifecycleBarrier barrier(phase);
+  g_session_lifecycle_barrier = &barrier;
+  vtk_flutter::testing::SetSessionLifecycleHook(SessionLifecycleHook);
+  std::thread first_thread(std::move(first));
+  {
+    std::unique_lock lock(barrier.mutex);
+    const auto started = barrier.condition.wait_for(
+        lock, 2s, [&] { return barrier.entered == 1; });
+    if (!started) {
+      barrier.release = true;
+      barrier.condition.notify_all();
+      lock.unlock();
+      first_thread.join();
+      vtk_flutter::testing::SetSessionLifecycleHook(nullptr);
+      g_session_lifecycle_barrier = nullptr;
+      throw std::runtime_error(
+          "first session lifecycle operation did not start");
+    }
+  }
+
+  std::thread second_thread(std::move(second));
+  bool contender_blocked = false;
+  bool serialized = false;
+  {
+    std::unique_lock lock(barrier.mutex);
+    contender_blocked = barrier.condition.wait_for(
+        lock, 2s,
+        [&] { return barrier.waiting == 2 && barrier.contended == 1; });
+    serialized = contender_blocked && barrier.entered == 1;
+    barrier.release = true;
+    barrier.condition.notify_all();
+  }
+  first_thread.join();
+  second_thread.join();
+  vtk_flutter::testing::SetSessionLifecycleHook(nullptr);
+  g_session_lifecycle_barrier = nullptr;
+
+  Require(contender_blocked,
+          "second session lifecycle operation did not contend");
+  Require(serialized, message);
+}
+
+void TestSessionLifecycle() {
+  VtkFlutterSession *first = nullptr;
+  VtkFlutterSession *second = nullptr;
+  VtkFlutterStatus first_status{};
+  VtkFlutterStatus second_status{};
+  int32_t first_result = VTK_FLUTTER_STATUS_INTERNAL_ERROR;
+  int32_t second_result = VTK_FLUTTER_STATUS_INTERNAL_ERROR;
+  RequireSerializedLifecycle(
+      vtk_flutter::testing::SessionLifecyclePhase::construction,
+      [&] { first_result = vtk_flutter_session_create(&first, &first_status); },
+      [&] {
+        second_result = vtk_flutter_session_create(&second, &second_status);
+      },
+      "VTK session construction was not globally serialized");
+  RequireOk(first_result, first_status, "first concurrent session_create");
+  RequireOk(second_result, second_status, "second concurrent session_create");
+
+  RequireSerializedLifecycle(
+      vtk_flutter::testing::SessionLifecyclePhase::destruction,
+      [&] { vtk_flutter_session_destroy(first); },
+      [&] { vtk_flutter_session_destroy(second); },
+      "VTK session destruction was not globally serialized");
+
+  constexpr int thread_count = 4;
+  constexpr int iterations = 8;
+  std::barrier start(thread_count);
+  std::atomic_bool stress_succeeded = true;
+  std::array<std::thread, thread_count> threads;
+  for (auto &thread : threads) {
+    thread = std::thread([&] {
+      start.arrive_and_wait();
+      for (int iteration = 0; iteration < iterations; ++iteration) {
+        VtkFlutterSession *session = nullptr;
+        VtkFlutterStatus status{};
+        if (vtk_flutter_session_create(&session, &status) !=
+                VTK_FLUTTER_STATUS_OK ||
+            session == nullptr) {
+          stress_succeeded = false;
+          return;
+        }
+        vtk_flutter_session_destroy(session);
+      }
+    });
+  }
+  for (auto &thread : threads) {
+    thread.join();
+  }
+  Require(stress_succeeded, "concurrent session lifecycle stress failed");
 }
 
 VtkFlutterRenderLayer RenderLayer(VtkFlutterObjectHandle renderer, double left,
@@ -568,6 +815,10 @@ int main(int argc, char **argv) {
       TestCpuFrameCopy();
     } else if (test_case == "generic_session") {
       TestGenericSession();
+    } else if (test_case == "session_concurrency") {
+      TestSessionConcurrency();
+    } else if (test_case == "session_lifecycle") {
+      TestSessionLifecycle();
     } else if (test_case == "surface_render") {
       TestLayoutRender();
       TestSurfaceRender();

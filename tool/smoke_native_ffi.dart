@@ -12,11 +12,11 @@ void main() {
       throw StateError('Dart FFI is unavailable');
     }
 
-    final session = await transport.createSession();
+    final session = transport.createSession();
     final objects = <VtkBackendObjectHandle>[];
 
     Future<VtkBackendObjectHandle> create(VtkObjectType type) async {
-      final object = await transport.createObject(
+      final object = transport.createObject(
         sessionAddress: session,
         type: type,
       );
@@ -27,7 +27,7 @@ void main() {
     Future<VtkBackendObjectHandle> output(
       VtkBackendObjectHandle algorithm,
     ) async {
-      final result = await transport.invoke(
+      final result = transport.invoke(
         sessionAddress: session,
         target: algorithm,
         operation: .getOutputPort,
@@ -45,7 +45,7 @@ void main() {
       VtkBackendOperation operation, [
       List<Object?> arguments = const [],
     ]) async {
-      await transport.invoke(
+      transport.invoke(
         sessionAddress: session,
         target: target,
         operation: operation,
@@ -54,7 +54,7 @@ void main() {
     }
 
     try {
-      final image = await transport.createImageData(
+      final image = transport.createImageData(
         sessionAddress: session,
         input: VtkScalarImageInput(
           values: Int16List(8),
@@ -152,9 +152,9 @@ void main() {
       );
     } finally {
       for (final object in objects.reversed) {
-        await transport.destroyObject(sessionAddress: session, object: object);
+        transport.destroyObject(sessionAddress: session, object: object);
       }
-      await transport.destroySession(session);
+      transport.destroySession(session);
     }
   });
 }

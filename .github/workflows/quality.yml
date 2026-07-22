@@ -57,6 +57,16 @@ jobs:
             (Get-Content '.github/scripts/build-native-artifact.ps1' -Raw)
           ) | Out-Null
 
+      - name: Skip native artifact for Dart and Web checks
+        shell: pwsh
+        run: |
+          $hook = "hooks:`n  user_defines:`n    vtk_flutter:`n      skip_native_artifact: true`n`n"
+          foreach ($path in @('pubspec.yaml', 'example/pubspec.yaml')) {
+            $pubspec = Get-Content $path -Raw
+            $pubspec.Replace('environment:', "${hook}environment:") |
+              Set-Content $path -Encoding utf8NoBOM
+          }
+
       - name: Install Dart dependencies
         run: |
           flutter pub get

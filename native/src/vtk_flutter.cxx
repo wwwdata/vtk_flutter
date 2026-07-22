@@ -11,11 +11,12 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <unordered_map>
 
 namespace {
 std::mutex g_sessions_mutex;
-std::unordered_set<VtkFlutterSession *> g_sessions;
+std::unordered_map<VtkFlutterSession *, std::shared_ptr<VtkFlutterSession>>
+    g_sessions;
 
 void SetStatus(VtkFlutterStatus *status, VtkFlutterStatusCode code,
                std::string_view message = {}) {
@@ -67,13 +68,18 @@ int32_t WithLiveSession(VtkFlutterSession *session, VtkFlutterStatus *status,
               "session is required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
-  std::lock_guard lock(g_sessions_mutex);
-  if (!g_sessions.contains(session)) {
-    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
-              "session is not live");
-    return VTK_FLUTTER_STATUS_INVALID_STATE;
+  std::shared_ptr<VtkFlutterSession> live_session;
+  {
+    std::lock_guard lock(g_sessions_mutex);
+    const auto iterator = g_sessions.find(session);
+    if (iterator == g_sessions.end()) {
+      SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
+                "session is not live");
+      return VTK_FLUTTER_STATUS_INVALID_STATE;
+    }
+    live_session = iterator->second;
   }
-  return TranslateErrors(status, [&] { action(session->value); });
+  return TranslateErrors(status, [&] { action(live_session->value); });
 }
 
 int32_t VTK_FLUTTER_CALL SessionIsValid(VtkFlutterSession *session,
@@ -167,28 +173,41 @@ int32_t VTK_FLUTTER_CALL vtk_flutter_session_create(
   }
   *out_session = nullptr;
   return TranslateErrors(status, [&] {
-    auto session = std::make_unique<VtkFlutterSession>();
+    auto session = std::make_shared<VtkFlutterSession>();
     {
       std::lock_guard lock(g_sessions_mutex);
-      g_sessions.insert(session.get());
+      g_sessions.emplace(session.get(), session);
     }
-    *out_session = session.release();
+    *out_session = session.get();
   });
 }
 
 void VTK_FLUTTER_CALL vtk_flutter_session_destroy(
     VtkFlutterSession *session) {
   try {
+    std::shared_ptr<VtkFlutterSession> live_session;
     {
       std::lock_guard lock(g_sessions_mutex);
-      if (g_sessions.erase(session) == 0U) {
+      const auto iterator = g_sessions.find(session);
+      if (iterator == g_sessions.end()) {
         return;
       }
+      live_session = std::move(iterator->second);
+      g_sessions.erase(iterator);
     }
-    delete session;
   } catch (...) {
   }
 }
+
+#if defined(VTK_FLUTTER_BUILD_TESTING)
+namespace vtk_flutter::testing {
+int32_t WithLiveSession(
+    VtkFlutterSession *session, VtkFlutterStatus *status,
+    const std::function<void(vtk_flutter::Session &)> &action) {
+  return ::WithLiveSession(session, status, action);
+}
+} // namespace vtk_flutter::testing
+#endif
 
 int32_t VTK_FLUTTER_CALL vtk_flutter_object_create(
     VtkFlutterSession *session, const char *class_name,

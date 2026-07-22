@@ -12,13 +12,15 @@ you are prepared for API and artifact-contract changes.
 ## Architecture at a glance
 
 - Dart owns public types, validation, pipeline construction, object lifetimes,
-  capabilities, and serialized session operations.
+  capabilities, and serialized operations within each session. Independent
+  native sessions execute through persistent per-session workers.
 - Native code exposes a minimal, generic C ABI: opaque sessions and object
   handles, image-data upload, typed-wrapper invocation transport, rendering,
   status reporting, and explicit destruction.
 - Android, iOS, macOS, and Windows plugins are presentation adapters. They
-  register Flutter textures, provide frame storage, publish completed frames,
-  and manage platform lifecycle; they do not construct VTK pipelines.
+  register independently addressed Flutter textures for each native session,
+  provide frame storage, publish completed frames, and manage platform
+  lifecycle; they do not construct VTK pipelines.
 - Web uses a vtk.js backend and reports a smaller capability set. Native and
   Web callers must query capabilities instead of assuming feature parity.
 
@@ -28,6 +30,15 @@ as an explicitly unstable escape hatch; it is not a stable mirror of the VTK
 C++ API.
 
 See [Architecture](doc/architecture.md) for ownership and boundary details.
+
+## Independent native sessions
+
+Each native `VtkSession` owns its VTK objects, execution worker, presentation
+target, and Flutter texture. Applications can keep multiple native sessions
+alive concurrently; presentation operations are addressed by the opaque native
+session identity so resizing, rendering, recreating, or closing one view does
+not mutate another. Calls within one session remain ordered, while independent
+sessions may execute concurrently subject to platform graphics-thread rules.
 
 ## Atomic multi-renderer layouts
 

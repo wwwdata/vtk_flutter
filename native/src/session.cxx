@@ -17,6 +17,9 @@
 
 #include <algorithm>
 #include <array>
+#if defined(VTK_FLUTTER_BUILD_TESTING)
+#include <atomic>
+#endif
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -41,6 +44,21 @@ constexpr std::size_t kFrameCallbacksSize =
     sizeof(VtkFlutterFrameCallbacks);
 constexpr std::size_t kRenderLayerSize = sizeof(VtkFlutterRenderLayer);
 constexpr std::uint64_t kMaximumUploadBytes = 256ULL * 1024ULL * 1024ULL;
+std::mutex g_session_lifecycle_mutex;
+
+#if defined(VTK_FLUTTER_BUILD_TESTING)
+std::atomic<vtk_flutter::testing::SessionLifecycleHook>
+    g_session_lifecycle_hook{nullptr};
+
+void NotifySessionLifecycle(
+    vtk_flutter::testing::SessionLifecyclePhase phase,
+    vtk_flutter::testing::SessionLifecycleMoment moment) {
+  const auto hook = g_session_lifecycle_hook.load(std::memory_order_acquire);
+  if (hook != nullptr) {
+    hook(phase, moment);
+  }
+}
+#endif
 
 vtkSessionJson ParseJson(const char *text) {
   auto result = std::make_unique<vtkSessionJsonImpl>();
@@ -176,6 +194,20 @@ RenderTargetUnavailable::RenderTargetUnavailable()
 InvalidState::InvalidState(const char *message) : std::runtime_error(message) {}
 
 Session::Session() {
+#if defined(VTK_FLUTTER_BUILD_TESTING)
+  NotifySessionLifecycle(testing::SessionLifecyclePhase::construction,
+                         testing::SessionLifecycleMoment::waiting);
+  std::unique_lock lifecycle_lock(g_session_lifecycle_mutex, std::defer_lock);
+  if (!lifecycle_lock.try_lock()) {
+    NotifySessionLifecycle(testing::SessionLifecyclePhase::construction,
+                           testing::SessionLifecycleMoment::contended);
+    lifecycle_lock.lock();
+  }
+  NotifySessionLifecycle(testing::SessionLifecyclePhase::construction,
+                         testing::SessionLifecycleMoment::entered);
+#else
+  std::lock_guard lifecycle_lock(g_session_lifecycle_mutex);
+#endif
   vtkSessionDescriptor descriptor{};
   descriptor.ParseJson = ParseJson;
   descriptor.StringifyJson = StringifyJson;
@@ -212,6 +244,20 @@ Session::Session() {
 }
 
 Session::~Session() {
+#if defined(VTK_FLUTTER_BUILD_TESTING)
+  NotifySessionLifecycle(testing::SessionLifecyclePhase::destruction,
+                         testing::SessionLifecycleMoment::waiting);
+  std::unique_lock lifecycle_lock(g_session_lifecycle_mutex, std::defer_lock);
+  if (!lifecycle_lock.try_lock()) {
+    NotifySessionLifecycle(testing::SessionLifecyclePhase::destruction,
+                           testing::SessionLifecycleMoment::contended);
+    lifecycle_lock.lock();
+  }
+  NotifySessionLifecycle(testing::SessionLifecyclePhase::destruction,
+                         testing::SessionLifecycleMoment::entered);
+#else
+  std::lock_guard lifecycle_lock(g_session_lifecycle_mutex);
+#endif
   if (attached_target_ != nullptr) {
     try {
       attached_target_->Detach(this);
@@ -468,3 +514,11 @@ void VtkFlutterTextureTarget::Render(
     VtkFlutterFrameMetrics &metrics) {
   render_target_->Render(layers, viewport, primary_layer, metrics);
 }
+
+#if defined(VTK_FLUTTER_BUILD_TESTING)
+namespace vtk_flutter::testing {
+void SetSessionLifecycleHook(SessionLifecycleHook hook) {
+  g_session_lifecycle_hook.store(hook, std::memory_order_release);
+}
+} // namespace vtk_flutter::testing
+#endif

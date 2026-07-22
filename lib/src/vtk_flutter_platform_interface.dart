@@ -16,15 +16,24 @@ abstract class VtkFlutterPlatform extends PlatformInterface {
     _instance = instance;
   }
 
+  /// Whether presentation operations are independently keyed by native
+  /// session address and can safely keep more than one view alive.
+  bool get supportsIndependentSessionViews => false;
+
   Future<int> createView({
     required VtkViewport viewport,
     required int presentationApiAddress,
     required int nativeSessionAddress,
   }) => throw UnimplementedError();
 
-  Future<void> presentFrame() => throw UnimplementedError();
+  Future<void> presentFrame({required int nativeSessionAddress}) =>
+      throw UnimplementedError();
 
-  Future<void> resize(VtkViewport viewport) => throw UnimplementedError();
+  Future<void> resize({
+    required int nativeSessionAddress,
+    required VtkViewport viewport,
+  }) => throw UnimplementedError();
 
-  Future<void> disposeView() => throw UnimplementedError();
+  Future<void> disposeView({required int nativeSessionAddress}) =>
+      throw UnimplementedError();
 }

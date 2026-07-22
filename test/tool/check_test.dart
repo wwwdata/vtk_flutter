@@ -92,5 +92,29 @@ void main() {
         'integration_test/renderer_lab_test.dart -d macos',
       ),
     );
+    expect(commands, contains('.: bash tool/test_apple_adapter.sh macos'));
+    expect(commands, contains('.: bash tool/test_apple_adapter.sh ios'));
+  });
+
+  test('full Windows checks execute the presentation-adapter tests', () {
+    final checks = createChecks(
+      full: true,
+      operatingSystem: 'windows',
+      rootDirectory: r'C:\workspace',
+    );
+    final commands = [
+      for (final check in checks)
+        '${check.workingDirectory ?? '.'}: '
+            '${[check.executable, ...check.arguments].join(' ')}',
+    ];
+
+    expect(
+      commands,
+      contains(
+        'example: ctest --test-dir '
+        'build/windows/x64/plugins/vtk_flutter '
+        '-C Debug --output-on-failure',
+      ),
+    );
   });
 }

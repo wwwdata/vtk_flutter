@@ -6,6 +6,7 @@
 #include <vtk_flutter.h>
 
 #include <limits.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -14,6 +15,8 @@
 #include <string.h>
 
 typedef struct AndroidFrameTarget {
+  pthread_mutex_t mutex;
+  bool mutex_initialized;
   ANativeWindow *window;
   uint8_t *pixels;
   uint64_t capacity_bytes;
@@ -103,8 +106,30 @@ static bool ValidatePresentationApi(const VtkFlutterPresentationApi *api,
   return true;
 }
 
-static bool SetWindowGeometry(AndroidFrameTarget *target, int32_t width,
-                              int32_t height, VtkFlutterStatus *status) {
+static bool LockFrameTarget(AndroidFrameTarget *target,
+                            VtkFlutterStatus *status) {
+  if (target == NULL || !target->mutex_initialized) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
+              "Android frame synchronization is unavailable");
+    return false;
+  }
+  if (pthread_mutex_lock(&target->mutex) != 0) {
+    SetStatus(status, VTK_FLUTTER_STATUS_INTERNAL_ERROR,
+              "Could not lock the Android frame target");
+    return false;
+  }
+  return true;
+}
+
+static void UnlockFrameTarget(AndroidFrameTarget *target) {
+  if (target != NULL && target->mutex_initialized) {
+    (void)pthread_mutex_unlock(&target->mutex);
+  }
+}
+
+static bool SetWindowGeometryLocked(AndroidFrameTarget *target, int32_t width,
+                                    int32_t height,
+                                    VtkFlutterStatus *status) {
   if (target == NULL || target->window == NULL) {
     SetStatus(status, VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
               "Android presentation window is unavailable");
@@ -140,14 +165,20 @@ static int32_t BeginFrame(void *user_data, const VtkFlutterViewport *viewport,
               "Android begin_frame arguments are required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
+  if (!LockFrameTarget(target, status)) {
+    return status == NULL ? VTK_FLUTTER_STATUS_INTERNAL_ERROR : status->code;
+  }
   if (target->frame_in_progress) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
               "An Android frame is already in progress");
+    UnlockFrameTarget(target);
     return VTK_FLUTTER_STATUS_INVALID_STATE;
   }
   if ((target->width != viewport->width ||
        target->height != viewport->height) &&
-      !SetWindowGeometry(target, viewport->width, viewport->height, status)) {
+      !SetWindowGeometryLocked(target, viewport->width, viewport->height,
+                               status)) {
+    UnlockFrameTarget(target);
     return status == NULL ? VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE
                           : status->code;
   }
@@ -157,12 +188,14 @@ static int32_t BeginFrame(void *user_data, const VtkFlutterViewport *viewport,
   if (height != 0U && row_bytes > UINT64_MAX / height) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
               "Android frame dimensions overflow");
+    UnlockFrameTarget(target);
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
   const uint64_t capacity_bytes = row_bytes * height;
   if (capacity_bytes > (uint64_t)SIZE_MAX) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
               "Android frame does not fit addressable memory");
+    UnlockFrameTarget(target);
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
   if (capacity_bytes > target->capacity_bytes) {
@@ -171,6 +204,7 @@ static int32_t BeginFrame(void *user_data, const VtkFlutterViewport *viewport,
     if (replacement == NULL) {
       SetStatus(status, VTK_FLUTTER_STATUS_INTERNAL_ERROR,
                 "Could not allocate Android frame staging memory");
+      UnlockFrameTarget(target);
       return VTK_FLUTTER_STATUS_INTERNAL_ERROR;
     }
     target->pixels = replacement;
@@ -193,16 +227,23 @@ static int32_t EndFrame(void *user_data, const VtkFlutterFrameMetrics *metrics,
                         VtkFlutterStatus *status) {
   (void)metrics;
   AndroidFrameTarget *target = (AndroidFrameTarget *)user_data;
-  if (target == NULL || target->window == NULL || !target->frame_in_progress ||
-      target->pixels == NULL) {
+  if (target == NULL || !target->frame_in_progress) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
               "No Android frame is ready for publication");
+    return VTK_FLUTTER_STATUS_INVALID_STATE;
+  }
+  if (target->window == NULL || target->pixels == NULL) {
+    target->frame_in_progress = false;
+    UnlockFrameTarget(target);
+    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
+              "Android frame publication storage is unavailable");
     return VTK_FLUTTER_STATUS_INVALID_STATE;
   }
 
   ANativeWindow_Buffer buffer = {0};
   if (ANativeWindow_lock(target->window, &buffer, NULL) != 0) {
     target->frame_in_progress = false;
+    UnlockFrameTarget(target);
     SetStatus(status, VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
               "Could not lock the Android presentation window");
     return VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE;
@@ -220,6 +261,7 @@ static int32_t EndFrame(void *user_data, const VtkFlutterFrameMetrics *metrics,
   }
   const int result = ANativeWindow_unlockAndPost(target->window);
   target->frame_in_progress = false;
+  UnlockFrameTarget(target);
   if (!valid || result != 0) {
     SetStatus(status, VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
               valid ? "Could not publish the Android frame"
@@ -232,8 +274,9 @@ static int32_t EndFrame(void *user_data, const VtkFlutterFrameMetrics *metrics,
 
 static void CancelFrame(void *user_data) {
   AndroidFrameTarget *target = (AndroidFrameTarget *)user_data;
-  if (target != NULL) {
+  if (target != NULL && target->frame_in_progress) {
     target->frame_in_progress = false;
+    UnlockFrameTarget(target);
   }
 }
 
@@ -247,19 +290,19 @@ static AndroidAdapterView *ViewFromHandle(jlong handle) {
 static bool ReplaceWindow(JNIEnv *environment, AndroidFrameTarget *target,
                           jobject surface, int32_t width, int32_t height,
                           VtkFlutterStatus *status) {
-  if (target->frame_in_progress) {
-    SetStatus(status, VTK_FLUTTER_STATUS_INVALID_STATE,
-              "Cannot recreate an Android frame in progress");
-    return false;
-  }
   ANativeWindow *replacement = ANativeWindow_fromSurface(environment, surface);
   if (replacement == NULL) {
     SetStatus(status, VTK_FLUTTER_STATUS_RENDER_TARGET_UNAVAILABLE,
               "Flutter SurfaceTexture did not provide an Android window");
     return false;
   }
+  if (!LockFrameTarget(target, status)) {
+    ANativeWindow_release(replacement);
+    return false;
+  }
   AndroidFrameTarget candidate = {.window = replacement};
-  if (!SetWindowGeometry(&candidate, width, height, status)) {
+  if (!SetWindowGeometryLocked(&candidate, width, height, status)) {
+    UnlockFrameTarget(target);
     ANativeWindow_release(replacement);
     return false;
   }
@@ -270,11 +313,17 @@ static bool ReplaceWindow(JNIEnv *environment, AndroidFrameTarget *target,
   if (previous != NULL) {
     ANativeWindow_release(previous);
   }
+  UnlockFrameTarget(target);
   return true;
 }
 
 static void ReleaseFrameTarget(AndroidFrameTarget *target) {
-  CancelFrame(target);
+  if (target == NULL || !target->mutex_initialized) {
+    return;
+  }
+  if (pthread_mutex_lock(&target->mutex) != 0) {
+    return;
+  }
   if (target->window != NULL) {
     ANativeWindow_release(target->window);
     target->window = NULL;
@@ -285,6 +334,10 @@ static void ReleaseFrameTarget(AndroidFrameTarget *target) {
   target->row_bytes = 0U;
   target->width = 0;
   target->height = 0;
+  target->frame_in_progress = false;
+  (void)pthread_mutex_unlock(&target->mutex);
+  (void)pthread_mutex_destroy(&target->mutex);
+  target->mutex_initialized = false;
 }
 
 static int32_t ReleaseView(AndroidAdapterView *view, VtkFlutterStatus *status) {
@@ -347,6 +400,18 @@ Java_ninja_bieker_vtk_1flutter_AndroidVtkTextureAdapter_nativeCreate(
   view->session = (VtkFlutterSession *)(uintptr_t)native_session_address;
 
   VtkFlutterStatus status = {0};
+  int32_t code = api->session_is_valid(view->session, &status);
+  if (code != VTK_FLUTTER_STATUS_OK) {
+    ThrowStatus(environment, "validate session", code, &status);
+    free(view);
+    return 0;
+  }
+  if (pthread_mutex_init(&view->frame_target.mutex, NULL) != 0) {
+    ThrowJava(environment, "Could not initialize Android frame synchronization");
+    free(view);
+    return 0;
+  }
+  view->frame_target.mutex_initialized = true;
   if (!ReplaceWindow(environment, &view->frame_target, surface, width, height,
                      &status)) {
     ThrowStatus(environment, "create Android window", status.code, &status);
@@ -364,7 +429,7 @@ Java_ninja_bieker_vtk_1flutter_AndroidVtkTextureAdapter_nativeCreate(
       .cancel_frame = CancelFrame,
   };
   ClearStatus(api, &status);
-  int32_t code = api->texture_target_create(&callbacks, &view->target, &status);
+  code = api->texture_target_create(&callbacks, &view->target, &status);
   if (code != VTK_FLUTTER_STATUS_OK || view->target == NULL) {
     ThrowStatus(environment, "create texture target", code, &status);
     ReleaseFrameTarget(&view->frame_target);
@@ -372,20 +437,29 @@ Java_ninja_bieker_vtk_1flutter_AndroidVtkTextureAdapter_nativeCreate(
     return 0;
   }
 
-  ClearStatus(api, &status);
-  code =
-      api->session_attach_texture_target(view->session, view->target, &status);
+  return (jlong)(uintptr_t)view;
+}
+
+JNIEXPORT void JNICALL
+Java_ninja_bieker_vtk_1flutter_AndroidVtkTextureAdapter_nativeAttach(
+    JNIEnv *environment, jobject instance, jlong handle) {
+  (void)instance;
+  AndroidAdapterView *view = ViewFromHandle(handle);
+  if (view == NULL) {
+    ThrowJava(environment, "Android VTK view is not initialized");
+    return;
+  }
+  if (view->attached) {
+    return;
+  }
+  VtkFlutterStatus status = {0};
+  const int32_t code = view->api->session_attach_texture_target(
+      view->session, view->target, &status);
   if (code != VTK_FLUTTER_STATUS_OK) {
     ThrowStatus(environment, "attach texture target", code, &status);
-    VtkFlutterStatus destroy_status = {0};
-    (void)api->texture_target_destroy(view->target, &destroy_status);
-    view->target = NULL;
-    ReleaseFrameTarget(&view->frame_target);
-    free(view);
-    return 0;
+    return;
   }
   view->attached = true;
-  return (jlong)(uintptr_t)view;
 }
 
 JNIEXPORT void JNICALL
@@ -397,8 +471,14 @@ Java_ninja_bieker_vtk_1flutter_AndroidVtkTextureAdapter_nativeResize(
   VtkFlutterStatus status = {0};
   if (view == NULL) {
     ThrowJava(environment, "Android VTK view is not initialized");
-  } else if (!SetWindowGeometry(&view->frame_target, width, height, &status)) {
+  } else if (!LockFrameTarget(&view->frame_target, &status)) {
+    ThrowStatus(environment, "lock resize", status.code, &status);
+  } else if (!SetWindowGeometryLocked(&view->frame_target, width, height,
+                                      &status)) {
+    UnlockFrameTarget(&view->frame_target);
     ThrowStatus(environment, "resize", status.code, &status);
+  } else {
+    UnlockFrameTarget(&view->frame_target);
   }
 }
 
