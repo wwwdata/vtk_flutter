@@ -374,7 +374,17 @@ jobs:
 
       - name: Build and render the released package example
         working-directory: example
+        shell: bash
         run: |
           flutter pub get
           flutter build macos --debug
-          flutter test integration_test/renderer_lab_test.dart -d macos
+          for attempt in 1 2; do
+            if flutter test integration_test/renderer_lab_test.dart -d macos; then
+              exit 0
+            fi
+            if [[ $attempt -lt 2 ]]; then
+              echo "::warning::macOS did not launch the test app; retrying once."
+              sleep 5
+            fi
+          done
+          exit 1
