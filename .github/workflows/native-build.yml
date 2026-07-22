@@ -357,7 +357,6 @@ jobs:
             cd example &&
             flutter test integration_test/renderer_lab_test.dart
             -d emulator-5554
-            --plain-name "renders two independent sessions and keeps the survivor usable"
 
   windows-consumer:
     name: Windows x64 consumer smoke
