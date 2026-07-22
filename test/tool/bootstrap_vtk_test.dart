@@ -347,6 +347,14 @@ void SetParentInfo() {
 ''');
       internalsFile.writeAsStringSync('''
 #if defined(__ANDROID__) || defined(ANDROID)
+#include "Private/vtkEGLAndroidConfig.h"
+#elif defined(USE_WAYLAND)
+#include "Private/vtkEGLWaylandConfig.h"
+#else
+#include "Private/vtkEGLDefaultConfig.h"
+#endif
+
+#if defined(__ANDROID__) || defined(ANDROID)
   this->Config = std::make_unique<vtkEGLAndroidConfig>();
 #elif defined(USE_WAYLAND)
   this->Config = std::make_unique<vtkEGLWaylandConfig>();
@@ -399,6 +407,11 @@ void SetParentInfo() {
         internals,
         isNot(contains('std::make_unique<vtkEGLAndroidConfig>()')),
       );
+      expect(
+        internals,
+        isNot(contains('#include "Private/vtkEGLAndroidConfig.h"')),
+      );
+      expect(internals, contains('#include "Private/vtkEGLDefaultConfig.h"'));
       expect(internals, contains('surfaceType = EGL_PBUFFER_BIT;'));
       expect(internals, contains('clientAPI = EGL_OPENGL_ES2_BIT;'));
       expect(

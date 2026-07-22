@@ -719,6 +719,26 @@ void applyVtkAndroidOffscreenEglFix(Directory sourceDirectory) {
   );
   _replacePinnedVtkSource(
     file: internalsFile,
+    description: 'Android EGL configuration include',
+    original: '''
+#if defined(__ANDROID__) || defined(ANDROID)
+#include "Private/vtkEGLAndroidConfig.h"
+#elif defined(USE_WAYLAND)
+#include "Private/vtkEGLWaylandConfig.h"
+#else
+#include "Private/vtkEGLDefaultConfig.h"
+#endif
+''',
+    corrected: '''
+#if defined(USE_WAYLAND)
+#include "Private/vtkEGLWaylandConfig.h"
+#else
+#include "Private/vtkEGLDefaultConfig.h"
+#endif
+''',
+  );
+  _replacePinnedVtkSource(
+    file: internalsFile,
     description: 'Android EGL configuration',
     original: '''
 #if defined(__ANDROID__) || defined(ANDROID)
