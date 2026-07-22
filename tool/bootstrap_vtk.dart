@@ -409,6 +409,7 @@ final class VtkBootstrapper {
       }
       if (options.platform.startsWith('android-')) {
         stdout.writeln('Would apply the VTK 9.6.2 compile-tools target fix.');
+        stdout.writeln('Would apply the VTK 9.6.2 Android offscreen EGL fix.');
       }
       for (final command in plan) {
         _printCommand(command);
@@ -433,6 +434,7 @@ final class VtkBootstrapper {
     }
     if (options.platform.startsWith('android-')) {
       applyVtkCompileToolsTargetFix(sourceDirectory);
+      applyVtkAndroidOffscreenEglFix(sourceDirectory);
     }
 
     for (final command in plan) {
@@ -663,6 +665,159 @@ void applyVtkCompileToolsTargetFix(Directory sourceDirectory) {
   }
 
   templateFile.writeAsStringSync(contents.replaceFirst(original, corrected));
+}
+
+void applyVtkAndroidOffscreenEglFix(Directory sourceDirectory) {
+  final cmakeFile = File(
+    _join([sourceDirectory.path, 'Rendering', 'OpenGL2', 'CMakeLists.txt']),
+  );
+  final internalsFile = File(
+    _join([
+      sourceDirectory.path,
+      'Rendering',
+      'OpenGL2',
+      'Private',
+      'vtkEGLRenderWindowInternals.cxx',
+    ]),
+  );
+  final renderWindowFile = File(
+    _join([
+      sourceDirectory.path,
+      'Rendering',
+      'OpenGL2',
+      'vtkEGLRenderWindow.cxx',
+    ]),
+  );
+  for (final file in [cmakeFile, internalsFile, renderWindowFile]) {
+    if (!file.existsSync()) {
+      throw StateError(
+        '${file.path} is missing; cannot apply the VTK $vtkVersion '
+        'Android offscreen EGL fix.',
+      );
+    }
+  }
+
+  _replacePinnedVtkSource(
+    file: cmakeFile,
+    description: 'Android render-window factory',
+    original: '''
+  if (NOT VTK_DEFAULT_RENDER_WINDOW_HEADLESS)
+    vtk_object_factory_declare(
+      BASE vtkRenderWindow
+      OVERRIDE vtkOpenGLRenderWindow)
+    set(has_vtkRenderWindow_override 1)
+  endif ()
+''',
+    corrected: '''
+  if (NOT ANDROID AND NOT VTK_DEFAULT_RENDER_WINDOW_HEADLESS)
+    vtk_object_factory_declare(
+      BASE vtkRenderWindow
+      OVERRIDE vtkOpenGLRenderWindow)
+    set(has_vtkRenderWindow_override 1)
+  endif ()
+''',
+  );
+  _replacePinnedVtkSource(
+    file: internalsFile,
+    description: 'Android EGL configuration',
+    original: '''
+#if defined(__ANDROID__) || defined(ANDROID)
+  this->Config = std::make_unique<vtkEGLAndroidConfig>();
+#elif defined(USE_WAYLAND)
+  this->Config = std::make_unique<vtkEGLWaylandConfig>();
+#else
+  this->Config = std::make_unique<vtkEGLDefaultConfig>();
+#endif
+''',
+    corrected: '''
+#if defined(USE_WAYLAND)
+  this->Config = std::make_unique<vtkEGLWaylandConfig>();
+#else
+  this->Config = std::make_unique<vtkEGLDefaultConfig>();
+#endif
+''',
+  );
+  _replacePinnedVtkSource(
+    file: internalsFile,
+    description: 'Android pbuffer client API',
+    original: '''
+  else
+  {
+    surfaceType = EGL_PBUFFER_BIT;
+    clientAPI = EGL_OPENGL_BIT;
+  }
+''',
+    corrected: '''
+  else
+  {
+    surfaceType = EGL_PBUFFER_BIT;
+#if defined(__ANDROID__) || defined(ANDROID)
+    clientAPI = EGL_OPENGL_ES2_BIT;
+#else
+    clientAPI = EGL_OPENGL_BIT;
+#endif
+  }
+''',
+  );
+  _replacePinnedVtkSource(
+    file: renderWindowFile,
+    description: 'Android offscreen visibility',
+    original: '''
+  if (val)
+  {
+#if !defined(USE_WAYLAND) && !defined(__ANDROID__) && !defined(ANDROID)
+    vtkWarningMacro(<< "vtkEGLRenderWindow supports onscreen rendering only on Android or with "
+                       "Wayland, fallback to offscreen rendering.");
+    val = false;
+#endif
+  }
+  else
+  {
+#if defined(__ANDROID__) || defined(ANDROID)
+    vtkWarningMacro(<< "vtkEGLRenderWindow offscreen rendering on Android is not supported, "
+                       "fallback to onscreen rendering.");
+    val = true;
+#endif
+  }
+
+  this->Internals->SetUseOnscreenRendering(val);
+''',
+    corrected: '''
+  if (val)
+  {
+#if !defined(USE_WAYLAND)
+    vtkWarningMacro(<< "vtkEGLRenderWindow supports onscreen rendering only with Wayland, "
+                       "fallback to offscreen rendering.");
+    val = false;
+#endif
+  }
+
+  this->Internals->SetUseOnscreenRendering(val);
+''',
+  );
+}
+
+void _replacePinnedVtkSource({
+  required File file,
+  required String description,
+  required String original,
+  required String corrected,
+}) {
+  final contents = file.readAsStringSync();
+  final originalCount = original.allMatches(contents).length;
+  final correctedCount = corrected.allMatches(contents).length;
+  if (originalCount == 0 && correctedCount == 1) {
+    return;
+  }
+  if (originalCount != 1 || correctedCount != 0) {
+    throw StateError(
+      'Unexpected ${file.path} contents for the VTK $vtkVersion '
+      '$description fix: found $originalCount original and $correctedCount '
+      'corrected blocks.',
+    );
+  }
+
+  file.writeAsStringSync(contents.replaceFirst(original, corrected));
 }
 
 Future<void> _download(Uri uri, File destination) async {

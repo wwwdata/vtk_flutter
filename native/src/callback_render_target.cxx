@@ -1,9 +1,6 @@
 #include "callback_render_target.h"
 
 #include <vtkCamera.h>
-#if defined(__ANDROID__)
-#include <vtkEGLRenderWindow.h>
-#endif
 #include <vtkMatrix4x4.h>
 #include <vtkNew.h>
 #include <vtkRenderer.h>
@@ -215,15 +212,7 @@ public:
 
 private:
   void InitializeWindow() {
-#if defined(__ANDROID__)
-    // VTK's Android object-factory override for vtkRenderWindow recursively
-    // re-enters vtkRenderWindow::New() when linked into the monolithic core.
-    // The Android build has exactly one concrete backend, so construct it
-    // directly and bypass that broken base-class override.
-    window_ = vtkSmartPointer<vtkEGLRenderWindow>::New();
-#else
     window_ = vtkSmartPointer<vtkRenderWindow>::New();
-#endif
     if (window_ == nullptr) {
       throw std::runtime_error("VTK could not create a render window");
     }

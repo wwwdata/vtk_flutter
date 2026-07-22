@@ -309,6 +309,114 @@ void SetParentInfo() {
     });
   });
 
+  group('applyVtkAndroidOffscreenEglFix', () {
+    late Directory sourceDirectory;
+    late File cmakeFile;
+    late File internalsFile;
+    late File renderWindowFile;
+
+    setUp(() {
+      sourceDirectory = Directory.systemTemp.createTempSync(
+        'vtk-android-egl-source-test-',
+      );
+      cmakeFile = File(
+        _path(sourceDirectory.path, 'Rendering', 'OpenGL2', 'CMakeLists.txt'),
+      )..createSync(recursive: true);
+      internalsFile = File(
+        _path(
+          _path(sourceDirectory.path, 'Rendering', 'OpenGL2', 'Private'),
+          'vtkEGLRenderWindowInternals.cxx',
+        ),
+      )..createSync(recursive: true);
+      renderWindowFile = File(
+        _path(
+          sourceDirectory.path,
+          'Rendering',
+          'OpenGL2',
+          'vtkEGLRenderWindow.cxx',
+        ),
+      )..createSync(recursive: true);
+
+      cmakeFile.writeAsStringSync('''
+  if (NOT VTK_DEFAULT_RENDER_WINDOW_HEADLESS)
+    vtk_object_factory_declare(
+      BASE vtkRenderWindow
+      OVERRIDE vtkOpenGLRenderWindow)
+    set(has_vtkRenderWindow_override 1)
+  endif ()
+''');
+      internalsFile.writeAsStringSync('''
+#if defined(__ANDROID__) || defined(ANDROID)
+  this->Config = std::make_unique<vtkEGLAndroidConfig>();
+#elif defined(USE_WAYLAND)
+  this->Config = std::make_unique<vtkEGLWaylandConfig>();
+#else
+  this->Config = std::make_unique<vtkEGLDefaultConfig>();
+#endif
+
+  else
+  {
+    surfaceType = EGL_PBUFFER_BIT;
+    clientAPI = EGL_OPENGL_BIT;
+  }
+''');
+      renderWindowFile.writeAsStringSync('''
+  if (val)
+  {
+#if !defined(USE_WAYLAND) && !defined(__ANDROID__) && !defined(ANDROID)
+    vtkWarningMacro(<< "vtkEGLRenderWindow supports onscreen rendering only on Android or with "
+                       "Wayland, fallback to offscreen rendering.");
+    val = false;
+#endif
+  }
+  else
+  {
+#if defined(__ANDROID__) || defined(ANDROID)
+    vtkWarningMacro(<< "vtkEGLRenderWindow offscreen rendering on Android is not supported, "
+                       "fallback to onscreen rendering.");
+    val = true;
+#endif
+  }
+
+  this->Internals->SetUseOnscreenRendering(val);
+''');
+    });
+
+    tearDown(() {
+      sourceDirectory.deleteSync(recursive: true);
+    });
+
+    test('enables Android pbuffer rendering and is idempotent', () {
+      applyVtkAndroidOffscreenEglFix(sourceDirectory);
+      applyVtkAndroidOffscreenEglFix(sourceDirectory);
+
+      expect(
+        cmakeFile.readAsStringSync(),
+        contains('if (NOT ANDROID AND NOT VTK_DEFAULT_RENDER_WINDOW_HEADLESS)'),
+      );
+      final internals = internalsFile.readAsStringSync();
+      expect(
+        internals,
+        isNot(contains('std::make_unique<vtkEGLAndroidConfig>()')),
+      );
+      expect(internals, contains('surfaceType = EGL_PBUFFER_BIT;'));
+      expect(internals, contains('clientAPI = EGL_OPENGL_ES2_BIT;'));
+      expect(
+        renderWindowFile.readAsStringSync(),
+        isNot(contains('fallback to onscreen rendering')),
+      );
+    });
+
+    test('rejects source contents outside the pinned patch contract', () {
+      internalsFile.writeAsStringSync('unexpected source\n');
+
+      expect(
+        () => applyVtkAndroidOffscreenEglFix(sourceDirectory),
+        throwsA(isA<StateError>()),
+      );
+    });
+  });
+
   test('compile tools metadata accepts a 32-bit cross-build target', () async {
     final packageDirectory = Directory.systemTemp.createTempSync(
       'vtk-compile-tools-package-test-',
