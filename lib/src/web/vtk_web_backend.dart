@@ -291,12 +291,7 @@ final class VtkWebBackendSession
       );
     }
     final pngBytes = _decodePng(frame.pngDataUrl);
-    VtkWebFrameStore.present(
-      viewId: viewId,
-      viewport: viewport,
-      pngBytes: pngBytes,
-    );
-    return VtkRenderResult(
+    final result = VtkRenderResult(
       viewport: viewport,
       frameBytes: pngBytes.lengthInBytes,
       surfaceAllocationBytes: viewport.pixelCount * 4,
@@ -306,6 +301,12 @@ final class VtkWebBackendSession
       cpuReadbackTime: Duration(microseconds: frame.captureMicroseconds),
       worldToClip: VtkMatrix4(values: frame.worldToClip),
     );
+    VtkWebFrameStore.present(
+      viewId: viewId,
+      viewport: viewport,
+      pngBytes: pngBytes,
+    );
+    return result;
   }
 
   @override

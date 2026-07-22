@@ -189,6 +189,30 @@ void main() {
     expect(listenable.value, same(presented));
   });
 
+  test('validates render metadata before presenting a web frame', () async {
+    final session = await backend.openSession();
+    final renderer = await session.createObject(type: .renderer);
+    final viewport = VtkViewport(width: 3, height: 2);
+    final listenable = VtkWebFrameStore.frameFor(session.viewId);
+
+    await session.render(renderer: renderer, viewport: viewport);
+    final presented = listenable.value;
+    module.renderFrame = VtkWebRenderFrame(
+      pngDataUrl: 'data:image/png;base64,${base64Encode(module.pngBytes)}',
+      width: viewport.width,
+      height: viewport.height,
+      renderMicroseconds: 1,
+      captureMicroseconds: 1,
+      worldToClip: const [1],
+    );
+
+    await expectLater(
+      session.render(renderer: renderer, viewport: viewport),
+      throwsA(isA<VtkApiValidationException>()),
+    );
+    expect(listenable.value, same(presented));
+  });
+
   test(
     'maps every stable backend operation without raw method strings',
     () async {

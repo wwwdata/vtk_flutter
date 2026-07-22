@@ -242,6 +242,19 @@ void main() {
         ),
         throwsA(isA<VtkApiValidationException>()),
       );
+      await renderer.dispose();
+      await expectLater(
+        session.renderLayout(
+          layers: [
+            VtkRenderLayer(
+              renderer: renderer,
+              viewport: VtkNormalizedViewport.full,
+            ),
+          ],
+          viewport: VtkViewport(width: 100, height: 100),
+        ),
+        throwsA(isA<VtkApiStateException>()),
+      );
 
       expect(backend.sessions.single.renderLayoutCount, 0);
     });
