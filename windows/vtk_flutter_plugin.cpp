@@ -922,7 +922,7 @@ private:
     }
   }
 
-  void FinishDispose(SessionKey key, const std::shared_ptr<ViewState> &view,
+  void FinishDispose(SessionKey key, std::shared_ptr<ViewState> view,
                      bool resume_pending_creations = true) {
     view->pending_unregistrations = 0;
     view->disposing = false;
