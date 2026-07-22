@@ -44,6 +44,19 @@ void main() {
         () => VtkViewport(width: 0, height: 1),
         throwsA(isA<VtkApiValidationException>()),
       );
+      expect(
+        () => VtkNormalizedViewport(
+          left: double.nan,
+          bottom: 0,
+          right: 1,
+          top: 1,
+        ),
+        throwsA(isA<VtkApiValidationException>()),
+      );
+      expect(
+        () => VtkNormalizedViewport(left: 0.5, bottom: 0, right: 0.5, top: 1),
+        throwsA(isA<VtkApiValidationException>()),
+      );
     });
   });
 
@@ -123,7 +136,146 @@ void main() {
             .whereType<String>(),
         isEmpty,
       );
+      expect(backendSession.lastRenderLayers, [
+        VtkBackendRenderLayer(
+          renderer: const VtkBackendObjectHandle(6),
+          viewport: VtkNormalizedViewport.full,
+        ),
+      ]);
     });
+
+    test(
+      'renders an atomic disjoint layout and selects its primary layer',
+      () async {
+        final backendSession = backend.sessions.single;
+        final first = await session.createRenderer();
+        final second = await session.createRenderer();
+        final left = VtkNormalizedViewport(
+          left: 0,
+          bottom: 0,
+          right: 0.5,
+          top: 1,
+        );
+        final right = VtkNormalizedViewport(
+          left: 0.5,
+          bottom: 0,
+          right: 1,
+          top: 1,
+        );
+
+        await session.renderLayout(
+          layers: [
+            VtkRenderLayer(renderer: first, viewport: left),
+            VtkRenderLayer(renderer: second, viewport: right),
+          ],
+          viewport: VtkViewport(width: 200, height: 100),
+          primaryLayer: 1,
+        );
+
+        expect(backendSession.lastPrimaryLayer, 1);
+        expect(backendSession.lastRenderLayers, [
+          VtkBackendRenderLayer(
+            renderer: const VtkBackendObjectHandle(1),
+            viewport: left,
+          ),
+          VtkBackendRenderLayer(
+            renderer: const VtkBackendObjectHandle(2),
+            viewport: right,
+          ),
+        ]);
+      },
+    );
+
+    test('rejects invalid render layouts before calling the backend', () async {
+      final renderer = await session.createRenderer();
+      final other = await session.createRenderer();
+      final half = VtkNormalizedViewport(
+        left: 0,
+        bottom: 0,
+        right: 0.6,
+        top: 1,
+      );
+      final overlap = VtkNormalizedViewport(
+        left: 0.5,
+        bottom: 0,
+        right: 1,
+        top: 1,
+      );
+
+      await expectLater(
+        session.renderLayout(
+          layers: const [],
+          viewport: VtkViewport(width: 100, height: 100),
+        ),
+        throwsA(isA<VtkApiValidationException>()),
+      );
+      await expectLater(
+        session.renderLayout(
+          layers: [
+            VtkRenderLayer(renderer: renderer, viewport: half),
+            VtkRenderLayer(renderer: renderer, viewport: overlap),
+          ],
+          viewport: VtkViewport(width: 100, height: 100),
+        ),
+        throwsA(isA<VtkApiValidationException>()),
+      );
+      await expectLater(
+        session.renderLayout(
+          layers: [
+            VtkRenderLayer(renderer: renderer, viewport: half),
+            VtkRenderLayer(renderer: other, viewport: overlap),
+          ],
+          viewport: VtkViewport(width: 100, height: 100),
+        ),
+        throwsA(isA<VtkApiValidationException>()),
+      );
+      await expectLater(
+        session.renderLayout(
+          layers: [
+            VtkRenderLayer(
+              renderer: renderer,
+              viewport: VtkNormalizedViewport.full,
+            ),
+          ],
+          viewport: VtkViewport(width: 100, height: 100),
+          primaryLayer: 1,
+        ),
+        throwsA(isA<VtkApiValidationException>()),
+      );
+
+      expect(backend.sessions.single.renderLayoutCount, 0);
+    });
+
+    test(
+      'rejects an invalid layout without waiting for the session queue',
+      () async {
+        final backendSession = backend.sessions.single;
+        final property = await session.createProperty();
+        final renderer = await session.createRenderer();
+        backendSession.invokeGate = Completer<void>();
+
+        final blockedMutation = property.setOpacity(0.5);
+        var validationCompleted = false;
+        final invalidRender = session
+            .renderLayout(
+              layers: const [],
+              viewport: VtkViewport(width: 100, height: 100),
+            )
+            .whenComplete(() => validationCompleted = true);
+        final invalidExpectation = expectLater(
+          invalidRender,
+          throwsA(isA<VtkApiValidationException>()),
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        expect(validationCompleted, isTrue);
+        await invalidExpectation;
+        expect(backendSession.renderLayoutCount, 0);
+        backendSession.invokeGate?.complete();
+        await blockedMutation;
+        await renderer.dispose();
+      },
+    );
 
     test('covers the curated image and volume wrappers', () async {
       final image = await session.createImageData(
@@ -318,6 +470,35 @@ void main() {
         throwsA(isA<VtkApiStateException>()),
       );
 
+      final firstRenderer = await first.createRenderer();
+      final secondRenderer = await second.createRenderer();
+      await expectLater(
+        first.renderLayout(
+          layers: [
+            VtkRenderLayer(
+              renderer: firstRenderer,
+              viewport: VtkNormalizedViewport(
+                left: 0,
+                bottom: 0,
+                right: 0.5,
+                top: 1,
+              ),
+            ),
+            VtkRenderLayer(
+              renderer: secondRenderer,
+              viewport: VtkNormalizedViewport(
+                left: 0.5,
+                bottom: 0,
+                right: 1,
+                top: 1,
+              ),
+            ),
+          ],
+          viewport: VtkViewport(width: 100, height: 100),
+        ),
+        throwsA(isA<VtkApiStateException>()),
+      );
+
       await runtime.close();
     });
 
@@ -418,6 +599,29 @@ void main() {
       expect(backendSession.closeCount, 0);
       backendSession.invokeGate?.complete();
       await update;
+      await close;
+      expect(backendSession.closeCount, 1);
+      await runtime.close();
+    });
+
+    test('serializes layout rendering with close', () async {
+      final backend = _FakeBackend();
+      final runtime = createVtkRuntimeForBackend(backend);
+      final session = await runtime.openSession();
+      final backendSession = backend.sessions.single;
+      final renderer = await session.createRenderer();
+      backendSession.renderGate = Completer<void>();
+
+      final render = session.render(
+        renderer: renderer,
+        viewport: VtkViewport(width: 64, height: 64),
+      );
+      final close = session.close();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(backendSession.closeCount, 0);
+      backendSession.renderGate?.complete();
+      await render;
       await close;
       expect(backendSession.closeCount, 1);
       await runtime.close();
@@ -526,6 +730,10 @@ final class _FakeBackendSession
   int closeFailuresRemaining = 0;
   int _nextHandle = 1;
   Completer<void>? invokeGate;
+  Completer<void>? renderGate;
+  List<VtkBackendRenderLayer>? lastRenderLayers;
+  int? lastPrimaryLayer;
+  int renderLayoutCount = 0;
   final _outputHandles = <VtkBackendObjectHandle, VtkBackendObjectHandle>{};
 
   @override
@@ -592,16 +800,42 @@ final class _FakeBackendSession
   Future<VtkRenderResult> render({
     required VtkBackendObjectHandle renderer,
     required VtkViewport viewport,
-  }) async => VtkRenderResult(
+  }) => renderLayout(
+    layers: [
+      VtkBackendRenderLayer(
+        renderer: renderer,
+        viewport: VtkNormalizedViewport.full,
+      ),
+    ],
     viewport: viewport,
-    frameBytes: viewport.pixelCount * 4,
-    surfaceAllocationBytes: viewport.pixelCount * 4,
-    renderTime: const Duration(milliseconds: 1),
-    surfaceSubmitTime: Duration.zero,
-    gpuSyncWaitTime: Duration.zero,
-    cpuReadbackTime: Duration.zero,
-    worldToClip: VtkMatrix4.identity(),
+    primaryLayer: 0,
   );
+
+  @override
+  Future<VtkRenderResult> renderLayout({
+    required List<VtkBackendRenderLayer> layers,
+    required VtkViewport viewport,
+    required int primaryLayer,
+  }) async {
+    renderLayoutCount++;
+    lastRenderLayers = List.unmodifiable(layers);
+    lastPrimaryLayer = primaryLayer;
+    final gate = renderGate;
+    if (gate != null) {
+      await gate.future;
+      renderGate = null;
+    }
+    return VtkRenderResult(
+      viewport: viewport,
+      frameBytes: viewport.pixelCount * 4,
+      surfaceAllocationBytes: viewport.pixelCount * 4,
+      renderTime: const Duration(milliseconds: 1),
+      surfaceSubmitTime: Duration.zero,
+      gpuSyncWaitTime: Duration.zero,
+      cpuReadbackTime: Duration.zero,
+      worldToClip: VtkMatrix4.identity(),
+    );
+  }
 
   @override
   Future<void> close() async {

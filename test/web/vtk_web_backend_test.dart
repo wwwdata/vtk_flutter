@@ -104,6 +104,17 @@ void main() {
       expect(result.renderTime, const Duration(microseconds: 1200));
       expect(result.cpuReadbackTime, const Duration(microseconds: 300));
       expect(result.worldToClip, VtkMatrix4.identity());
+      expect(module.layoutRequests, hasLength(1));
+      expect(module.layoutRequests.single.layers, hasLength(1));
+      expect(
+        module.layoutRequests.single.layers.single.renderer,
+        renderer.value,
+      );
+      expect(module.layoutRequests.single.layers.single.left, 0);
+      expect(module.layoutRequests.single.layers.single.bottom, 0);
+      expect(module.layoutRequests.single.layers.single.right, 1);
+      expect(module.layoutRequests.single.layers.single.top, 1);
+      expect(module.layoutRequests.single.primaryLayer, 0);
 
       await session.close();
       expect(
@@ -112,6 +123,71 @@ void main() {
       );
     },
   );
+
+  test('maps and publishes an atomic multi-renderer layout once', () async {
+    final session = await backend.openSession();
+    final first = await session.createObject(type: .renderer);
+    final second = await session.createObject(type: .renderer);
+    final viewport = VtkViewport(width: 800, height: 600);
+
+    final result = await session.renderLayout(
+      layers: [
+        VtkBackendRenderLayer(
+          renderer: first,
+          viewport: VtkNormalizedViewport(
+            left: 0,
+            bottom: 0,
+            right: 0.5,
+            top: 1,
+          ),
+        ),
+        VtkBackendRenderLayer(
+          renderer: second,
+          viewport: VtkNormalizedViewport(
+            left: 0.5,
+            bottom: 0,
+            right: 1,
+            top: 1,
+          ),
+        ),
+      ],
+      viewport: viewport,
+      primaryLayer: 1,
+    );
+
+    final request = module.layoutRequests.single;
+    expect(request.width, 800);
+    expect(request.height, 600);
+    expect(request.primaryLayer, 1);
+    expect(request.layers.map((layer) => layer.renderer), [
+      first.value,
+      second.value,
+    ]);
+    expect(request.layers.map((layer) => layer.left), [0, 0.5]);
+    expect(request.layers.map((layer) => layer.right), [0.5, 1]);
+    expect(
+      VtkWebFrameStore.frameFor(session.viewId).value?.pngBytes,
+      module.pngBytes,
+    );
+    expect(result.viewport, viewport);
+  });
+
+  test('keeps the last presented frame when a layout render fails', () async {
+    final session = await backend.openSession();
+    final renderer = await session.createObject(type: .renderer);
+    final viewport = VtkViewport(width: 3, height: 2);
+    final listenable = VtkWebFrameStore.frameFor(session.viewId);
+
+    await session.render(renderer: renderer, viewport: viewport);
+    final presented = listenable.value;
+    module.renderError = StateError('injected layout failure');
+
+    await expectLater(
+      session.render(renderer: renderer, viewport: viewport),
+      throwsA(isA<VtkApiStateException>()),
+    );
+    expect(listenable.value, same(presented));
+  });
 
   test(
     'maps every stable backend operation without raw method strings',
@@ -256,10 +332,20 @@ final class _FakeWebModule implements VtkWebModule {
   final createdTypes = <String>[];
   final images = <VtkWebImageInput>[];
   final invocations = <({String operation, List<Object?> arguments})>[];
+  final layoutRequests =
+      <
+        ({
+          List<VtkWebRenderLayer> layers,
+          int width,
+          int height,
+          int primaryLayer,
+        })
+      >[];
   int _nextHandle = 1;
   bool closed = false;
   int? fixedObjectHandle;
   VtkWebRenderFrame? renderFrame;
+  Object? renderError;
 
   @override
   Future<VtkWebModuleCapabilities> capabilities() async =>
@@ -330,16 +416,47 @@ final class _FakeWebModule implements VtkWebModule {
     required int renderer,
     required int width,
     required int height,
-  }) async =>
-      renderFrame ??
-      VtkWebRenderFrame(
-        pngDataUrl: 'data:image/png;base64,${base64Encode(pngBytes)}',
-        width: width,
-        height: height,
-        renderMicroseconds: 1200,
-        captureMicroseconds: 300,
-        worldToClip: VtkMatrix4.identity().values,
-      );
+  }) => renderLayout(
+    sessionId: sessionId,
+    layers: [
+      VtkWebRenderLayer(
+        renderer: renderer,
+        left: 0,
+        bottom: 0,
+        right: 1,
+        top: 1,
+      ),
+    ],
+    width: width,
+    height: height,
+    primaryLayer: 0,
+  );
+
+  @override
+  Future<VtkWebRenderFrame> renderLayout({
+    required int sessionId,
+    required List<VtkWebRenderLayer> layers,
+    required int width,
+    required int height,
+    required int primaryLayer,
+  }) async {
+    layoutRequests.add((
+      layers: List.unmodifiable(layers),
+      width: width,
+      height: height,
+      primaryLayer: primaryLayer,
+    ));
+    if (renderError case final error?) throw error;
+    return renderFrame ??
+        VtkWebRenderFrame(
+          pngDataUrl: 'data:image/png;base64,${base64Encode(pngBytes)}',
+          width: width,
+          height: height,
+          renderMicroseconds: 1200,
+          captureMicroseconds: 300,
+          worldToClip: VtkMatrix4.identity().values,
+        );
+  }
 
   @override
   Future<void> closeSession(int sessionId) async {

@@ -11,6 +11,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkObjectManager;
@@ -48,8 +49,8 @@ private:
 
   void Attach(vtk_flutter::Session *session);
   void Detach(vtk_flutter::Session *session);
-  void Render(vtkSmartPointer<vtkRenderer> renderer,
-              const VtkFlutterViewport &viewport,
+  void Render(const std::vector<vtk_flutter::RenderLayer> &layers,
+              const VtkFlutterViewport &viewport, std::uint32_t primary_layer,
               VtkFlutterFrameMetrics &metrics);
 
   std::unique_ptr<vtk_flutter::CallbackRenderTarget> render_target_;
@@ -72,9 +73,11 @@ public:
   std::string Invoke(VtkFlutterObjectHandle object, const char *method_name,
                      const char *arguments_json);
   VtkFlutterObjectHandle CreateImageData(const VtkFlutterImageData &image);
-  void Render(VtkFlutterObjectHandle renderer,
-              const VtkFlutterViewport &viewport,
-              VtkFlutterFrameMetrics &metrics);
+  void RenderLayout(const VtkFlutterRenderLayer *layers,
+                    std::uint32_t layer_count,
+                    const VtkFlutterViewport &viewport,
+                    std::uint32_t primary_layer,
+                    VtkFlutterFrameMetrics &metrics);
   void AttachTextureTarget(VtkFlutterTextureTarget &target);
   void DetachTextureTarget(VtkFlutterTextureTarget &target);
 

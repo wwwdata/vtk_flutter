@@ -19,6 +19,10 @@ imports no package internals, experimental API, backend-specific API, or native
 VTK symbols. The recipe builders in `lib/recipes.dart` return a renderer and
 camera so applications can render the scene through a `VtkSession`.
 
+The app presents each selected recipe beside a companion renderer using one
+atomic `VtkSession.renderLayout` call. This keeps both regions in one session
+and one Flutter texture while visibly exercising the multi-renderer contract.
+
 ## Run the showcase
 
 From this directory:

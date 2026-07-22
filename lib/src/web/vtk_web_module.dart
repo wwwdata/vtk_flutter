@@ -28,7 +28,31 @@ abstract interface class VtkWebModule {
     required int height,
   });
 
+  Future<VtkWebRenderFrame> renderLayout({
+    required int sessionId,
+    required List<VtkWebRenderLayer> layers,
+    required int width,
+    required int height,
+    required int primaryLayer,
+  });
+
   Future<void> closeSession(int sessionId);
+}
+
+final class VtkWebRenderLayer {
+  const VtkWebRenderLayer({
+    required this.renderer,
+    required this.left,
+    required this.bottom,
+    required this.right,
+    required this.top,
+  });
+
+  final int renderer;
+  final double left;
+  final double bottom;
+  final double right;
+  final double top;
 }
 
 final class VtkWebModuleCapabilities {

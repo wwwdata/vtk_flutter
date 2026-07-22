@@ -29,6 +29,47 @@ C++ API.
 
 See [Architecture](doc/architecture.md) for ownership and boundary details.
 
+## Atomic multi-renderer layouts
+
+One `VtkSession` can render several owned `VtkRenderer` objects into disjoint
+normalized viewports of one Flutter texture. The operation resizes, renders,
+captures, and presents the complete layout once:
+
+```dart
+await session.renderLayout(
+  layers: [
+    VtkRenderLayer(
+      renderer: overviewRenderer,
+      viewport: VtkNormalizedViewport(
+        left: 0,
+        bottom: 0,
+        right: 0.4,
+        top: 1,
+      ),
+    ),
+    VtkRenderLayer(
+      renderer: detailRenderer,
+      viewport: VtkNormalizedViewport(
+        left: 0.4,
+        bottom: 0,
+        right: 1,
+        top: 1,
+      ),
+    ),
+  ],
+  viewport: VtkViewport(width: 1200, height: 800),
+  primaryLayer: 1,
+);
+```
+
+Normalized VTK viewport coordinates use a bottom-left origin. Flutter image
+coordinates use a top-left origin, so consumers cropping a shared texture must
+flip the vertical coordinate. Viewports may touch but cannot overlap. Every
+renderer must be live, unique, and owned by the same session. The returned
+`worldToClip` matrix belongs to `primaryLayer` and uses that layer's pixel
+aspect ratio. `render(renderer:, viewport:)` remains the full-texture,
+one-renderer convenience API.
+
 ## Platforms
 
 The native artifact matrix contains nine targets:

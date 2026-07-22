@@ -3,10 +3,14 @@
 
 #include <stdint.h>
 
+// Additive exports retain ABI 4 so existing clients remain compatible. New
+// descriptors carry independent versions and existing declarations never move.
 #define VTK_FLUTTER_ABI_VERSION 4U
 #define VTK_FLUTTER_PRESENTATION_API_VERSION 2U
 #define VTK_FLUTTER_FRAME_CALLBACKS_VERSION 1U
 #define VTK_FLUTTER_CPU_FRAME_VERSION 1U
+#define VTK_FLUTTER_RENDER_LAYER_VERSION 1U
+#define VTK_FLUTTER_MAX_RENDER_LAYERS 64U
 #define VTK_FLUTTER_STATUS_MESSAGE_CAPACITY 512U
 
 #if defined(VTK_FLUTTER_STATIC)
@@ -69,6 +73,16 @@ typedef struct VtkFlutterViewport {
   int32_t width;
   int32_t height;
 } VtkFlutterViewport;
+
+typedef struct VtkFlutterRenderLayer {
+  uint32_t struct_size;
+  uint32_t version;
+  VtkFlutterObjectHandle renderer;
+  double left;
+  double bottom;
+  double right;
+  double top;
+} VtkFlutterRenderLayer;
 
 // The core deep-copies values before this call returns. Values are x-fastest.
 // direction is a row-major 3x3 world transform for the image axes.
@@ -188,6 +202,12 @@ VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_image_data_create(
 VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_session_render(
     VtkFlutterSession *session, VtkFlutterObjectHandle renderer,
     const VtkFlutterViewport *viewport, VtkFlutterFrameMetrics *metrics,
+    VtkFlutterStatus *status);
+
+VTK_FLUTTER_EXPORT int32_t VTK_FLUTTER_CALL vtk_flutter_session_render_layout(
+    VtkFlutterSession *session, const VtkFlutterRenderLayer *layers,
+    uint32_t layer_count, const VtkFlutterViewport *viewport,
+    uint32_t primary_layer, VtkFlutterFrameMetrics *metrics,
     VtkFlutterStatus *status);
 
 #ifdef __cplusplus

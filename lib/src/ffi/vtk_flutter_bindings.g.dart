@@ -115,6 +115,27 @@ external int vtk_flutter_session_render(
   ffi.Pointer<VtkFlutterStatus> status,
 );
 
+@ffi.Native<
+  ffi.Int32 Function(
+    ffi.Pointer<VtkFlutterSession>,
+    ffi.Pointer<VtkFlutterRenderLayer>,
+    ffi.Uint32,
+    ffi.Pointer<VtkFlutterViewport>,
+    ffi.Uint32,
+    ffi.Pointer<VtkFlutterFrameMetrics>,
+    ffi.Pointer<VtkFlutterStatus>,
+  )
+>()
+external int vtk_flutter_session_render_layout(
+  ffi.Pointer<VtkFlutterSession> session,
+  ffi.Pointer<VtkFlutterRenderLayer> layers,
+  int layer_count,
+  ffi.Pointer<VtkFlutterViewport> viewport,
+  int primary_layer,
+  ffi.Pointer<VtkFlutterFrameMetrics> metrics,
+  ffi.Pointer<VtkFlutterStatus> status,
+);
+
 final class VtkFlutterSession extends ffi.Opaque {}
 
 final class VtkFlutterTextureTarget extends ffi.Opaque {}
@@ -198,6 +219,29 @@ final class VtkFlutterViewport extends ffi.Struct {
 
   @ffi.Int32()
   external int height;
+}
+
+final class VtkFlutterRenderLayer extends ffi.Struct {
+  @ffi.Uint32()
+  external int struct_size;
+
+  @ffi.Uint32()
+  external int version;
+
+  @VtkFlutterObjectHandle()
+  external int renderer;
+
+  @ffi.Double()
+  external double left;
+
+  @ffi.Double()
+  external double bottom;
+
+  @ffi.Double()
+  external double right;
+
+  @ffi.Double()
+  external double top;
 }
 
 final class VtkFlutterImageData extends ffi.Struct {
@@ -405,5 +449,9 @@ const int VTK_FLUTTER_PRESENTATION_API_VERSION = 2;
 const int VTK_FLUTTER_FRAME_CALLBACKS_VERSION = 1;
 
 const int VTK_FLUTTER_CPU_FRAME_VERSION = 1;
+
+const int VTK_FLUTTER_RENDER_LAYER_VERSION = 1;
+
+const int VTK_FLUTTER_MAX_RENDER_LAYERS = 64;
 
 const int VTK_FLUTTER_STATUS_MESSAGE_CAPACITY = 512;

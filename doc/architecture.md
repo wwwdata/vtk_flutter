@@ -37,13 +37,23 @@ by Dart:
 3. deep-copy typed scalar image data;
 4. invoke a VTK method through VTK's generated serialization invoker and
    return a bounded JSON result;
-5. render a renderer object into the attached presentation target; and
+5. atomically render one or more renderer objects into disjoint regions of the
+   attached presentation target; and
 6. report status and frame metrics.
 
 The C++ core owns every VTK object. Handles are session-local, never expose a
 VTK pointer, and become invalid when destroyed or when their session closes.
 Calls on one session are serialized, and render-thread requirements remain in
 the native implementation.
+
+A layout render uses one render window, one graphics context, one frame
+transaction, and one Flutter texture. All renderer handles and normalized
+viewports are validated before the render window is mutated. The complete
+target is cleared, all renderers are attached, VTK renders and reads back once,
+and every renderer is detached on success or failure. The frame transform is
+captured from an explicitly selected primary renderer. This is deliberately
+different from independent multi-session surfaces, which remain outside the
+current platform adapter contract.
 
 VTK is a C++ library and does not expose a stable C ABI that Dart FFI can call
 directly. The small C++ session is therefore the irreducible adapter: it owns

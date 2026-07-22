@@ -31,11 +31,22 @@ void main() {
       arguments: [image],
     );
     final viewport = VtkViewport(width: 80, height: 40);
-    final result = await session.render(renderer: renderer, viewport: viewport);
+    final result = await session.renderLayout(
+      layers: [
+        VtkBackendRenderLayer(
+          renderer: renderer,
+          viewport: VtkNormalizedViewport.full,
+        ),
+      ],
+      viewport: viewport,
+      primaryLayer: 0,
+    );
 
     expect(result.viewport, viewport);
     expect(platform.resizedTo, viewport);
     expect(platform.presentCount, 1);
+    expect(transport.renderLayoutCount, 1);
+    expect(transport.lastPrimaryLayer, 0);
     expect(transport.lastOperation, VtkBackendOperation.addActor);
 
     await session.close();
@@ -159,6 +170,8 @@ final class _FakeTransport implements VtkFfiTransport {
   final List<String> events;
   int _nextHandle = 1;
   VtkBackendOperation? lastOperation;
+  int renderLayoutCount = 0;
+  int? lastPrimaryLayer;
 
   @override
   int get presentationApiAddress => 200;
@@ -223,15 +236,37 @@ final class _FakeTransport implements VtkFfiTransport {
     required int sessionAddress,
     required VtkBackendObjectHandle renderer,
     required VtkViewport viewport,
-  }) async => VtkRenderResult(
+  }) => renderLayout(
+    sessionAddress: sessionAddress,
+    layers: [
+      VtkBackendRenderLayer(
+        renderer: renderer,
+        viewport: VtkNormalizedViewport.full,
+      ),
+    ],
     viewport: viewport,
-    frameBytes: viewport.pixelCount * 4,
-    surfaceAllocationBytes: viewport.pixelCount * 4,
-    renderTime: const Duration(milliseconds: 1),
-    surfaceSubmitTime: Duration.zero,
-    gpuSyncWaitTime: Duration.zero,
-    cpuReadbackTime: Duration.zero,
+    primaryLayer: 0,
   );
+
+  @override
+  Future<VtkRenderResult> renderLayout({
+    required int sessionAddress,
+    required List<VtkBackendRenderLayer> layers,
+    required VtkViewport viewport,
+    required int primaryLayer,
+  }) async {
+    renderLayoutCount++;
+    lastPrimaryLayer = primaryLayer;
+    return VtkRenderResult(
+      viewport: viewport,
+      frameBytes: viewport.pixelCount * 4,
+      surfaceAllocationBytes: viewport.pixelCount * 4,
+      renderTime: const Duration(milliseconds: 1),
+      surfaceSubmitTime: Duration.zero,
+      gpuSyncWaitTime: Duration.zero,
+      cpuReadbackTime: Duration.zero,
+    );
+  }
 }
 
 final class _FakePlatform extends VtkFlutterPlatform {

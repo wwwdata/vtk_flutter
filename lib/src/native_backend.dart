@@ -203,16 +203,33 @@ final class VtkNativeBackendSession
   Future<VtkRenderResult> render({
     required VtkBackendObjectHandle renderer,
     required VtkViewport viewport,
+  }) => renderLayout(
+    layers: [
+      VtkBackendRenderLayer(
+        renderer: renderer,
+        viewport: VtkNormalizedViewport.full,
+      ),
+    ],
+    viewport: viewport,
+    primaryLayer: 0,
+  );
+
+  @override
+  Future<VtkRenderResult> renderLayout({
+    required List<VtkBackendRenderLayer> layers,
+    required VtkViewport viewport,
+    required int primaryLayer,
   }) async {
     _ensureOpen();
     if (_viewport != viewport) {
       await _platform.resize(viewport);
       _viewport = viewport;
     }
-    final result = await _transport.render(
+    final result = await _transport.renderLayout(
       sessionAddress: _sessionAddress,
-      renderer: renderer,
+      layers: layers,
       viewport: viewport,
+      primaryLayer: primaryLayer,
     );
     await _platform.presentFrame();
     return result;

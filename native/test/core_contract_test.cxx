@@ -8,9 +8,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -86,9 +88,11 @@ SessionGuard CreateSession() {
 
 struct FrameHarness {
   std::vector<std::uint8_t> pixels;
+  std::vector<std::uint8_t> presented_pixels;
   int begin_count = 0;
   int end_count = 0;
   int cancel_count = 0;
+  int32_t end_result = VTK_FLUTTER_STATUS_OK;
 };
 
 int32_t VTK_FLUTTER_CALL BeginFrame(void *user_data,
@@ -111,8 +115,12 @@ int32_t VTK_FLUTTER_CALL BeginFrame(void *user_data,
 int32_t VTK_FLUTTER_CALL EndFrame(void *user_data,
                                   const VtkFlutterFrameMetrics *,
                                   VtkFlutterStatus *) {
-  ++static_cast<FrameHarness *>(user_data)->end_count;
-  return VTK_FLUTTER_STATUS_OK;
+  auto &harness = *static_cast<FrameHarness *>(user_data);
+  ++harness.end_count;
+  if (harness.end_result == VTK_FLUTTER_STATUS_OK) {
+    harness.presented_pixels = harness.pixels;
+  }
+  return harness.end_result;
 }
 
 void VTK_FLUTTER_CALL CancelFrame(void *user_data) {
@@ -218,6 +226,237 @@ void TestGenericSession() {
   status = {};
   RequireOk(vtk_flutter_object_destroy(session.value, renderer, &status),
             status, "idempotent object destroy");
+}
+
+VtkFlutterRenderLayer RenderLayer(VtkFlutterObjectHandle renderer, double left,
+                                  double bottom, double right, double top) {
+  return {
+      sizeof(VtkFlutterRenderLayer),
+      VTK_FLUTTER_RENDER_LAYER_VERSION,
+      renderer,
+      left,
+      bottom,
+      right,
+      top,
+  };
+}
+
+std::array<std::uint8_t, 4> PixelAt(const std::vector<std::uint8_t> &pixels,
+                                    int width, int x, int y) {
+  const auto offset = (static_cast<std::size_t>(y) * width + x) * 4U;
+  return {pixels[offset], pixels[offset + 1U], pixels[offset + 2U],
+          pixels[offset + 3U]};
+}
+
+void RequireColor(const std::array<std::uint8_t, 4> &pixel,
+                  const std::array<std::uint8_t, 4> &expected,
+                  std::string_view message) {
+  constexpr int tolerance = 2;
+  for (std::size_t component = 0; component < pixel.size(); ++component) {
+    Require(std::abs(static_cast<int>(pixel[component]) -
+                     static_cast<int>(expected[component])) <= tolerance,
+            message);
+  }
+}
+
+void RequireInvalidLayout(VtkFlutterSession *session,
+                          const VtkFlutterRenderLayer *layers,
+                          std::uint32_t layer_count,
+                          const VtkFlutterViewport &viewport,
+                          std::uint32_t primary_layer, FrameHarness &harness,
+                          std::string_view message) {
+  const auto begin_count = harness.begin_count;
+  const auto presented_pixels = harness.presented_pixels;
+  VtkFlutterFrameMetrics metrics{};
+  metrics.frame_bytes = 1U;
+  metrics.world_to_clip_valid = 1;
+  VtkFlutterStatus status{};
+  const auto result =
+      vtk_flutter_session_render_layout(session, layers, layer_count, &viewport,
+                                        primary_layer, &metrics, &status);
+  Require(result == VTK_FLUTTER_STATUS_INVALID_ARGUMENT, message);
+  Require(harness.begin_count == begin_count,
+          "invalid layout began a frame transaction");
+  Require(harness.presented_pixels == presented_pixels,
+          "invalid layout changed the last presented frame");
+  Require(metrics.frame_bytes == 0 && metrics.world_to_clip_valid == 0,
+          "invalid layout returned partial metrics");
+}
+
+void TestLayoutRender() {
+  auto session = CreateSession();
+  const auto lower_left = CreateObject(session.value, "vtkRenderer");
+  Invoke(session.value, lower_left, "SetBackground",
+         nlohmann::json::array({1.0, 0.0, 0.0}));
+  Invoke(session.value, lower_left, "SetBackgroundAlpha",
+         nlohmann::json::array({1.0}));
+  const auto upper_right = CreateObject(session.value, "vtkRenderer");
+  Invoke(session.value, upper_right, "SetBackground",
+         nlohmann::json::array({0.0, 1.0, 0.0}));
+  Invoke(session.value, upper_right, "SetBackgroundAlpha",
+         nlohmann::json::array({1.0}));
+
+  FrameHarness harness;
+  const VtkFlutterFrameCallbacks callbacks{
+      sizeof(VtkFlutterFrameCallbacks),
+      VTK_FLUTTER_FRAME_CALLBACKS_VERSION,
+      &harness,
+      BeginFrame,
+      EndFrame,
+      CancelFrame,
+  };
+  const auto *api = vtk_flutter_get_presentation_api();
+  VtkFlutterStatus status{};
+  VtkFlutterTextureTarget *target = nullptr;
+  RequireOk(api->texture_target_create(&callbacks, &target, &status), status,
+            "texture_target_create");
+  RequireOk(api->session_attach_texture_target(session.value, target, &status),
+            status, "session_attach_texture_target");
+
+  constexpr VtkFlutterViewport viewport{64, 64};
+  const std::array layers{
+      RenderLayer(upper_right, 0.5, 0.5, 1.0, 1.0),
+      RenderLayer(lower_left, 0.0, 0.0, 0.5, 0.25),
+  };
+  VtkFlutterFrameMetrics layout_metrics{};
+  RequireOk(vtk_flutter_session_render_layout(session.value, layers.data(),
+                                              layers.size(), &viewport, 1U,
+                                              &layout_metrics, &status),
+            status, "session_render_layout");
+  Require(harness.begin_count == 1 && harness.end_count == 1 &&
+              harness.cancel_count == 0,
+          "layout did not use one frame transaction");
+  Require(layout_metrics.world_to_clip_valid == 1,
+          "layout omitted the primary world-to-clip matrix");
+  RequireColor(PixelAt(harness.presented_pixels, viewport.width, 16, 56),
+               {255, 0, 0, 255},
+               "bottom-left VTK viewport was not rendered in the lower cell");
+  RequireColor(PixelAt(harness.presented_pixels, viewport.width, 48, 16),
+               {0, 255, 0, 255},
+               "top-right VTK viewport was not rendered in the upper cell");
+  RequireColor(PixelAt(harness.presented_pixels, viewport.width, 16, 16),
+               {0, 0, 0, 0},
+               "uncovered top-left pixels were not transparently cleared");
+  RequireColor(PixelAt(harness.presented_pixels, viewport.width, 48, 48),
+               {0, 0, 0, 0},
+               "uncovered bottom-right pixels were not transparently cleared");
+
+  auto invalid_second = layers;
+  invalid_second[1].renderer = std::numeric_limits<std::uint32_t>::max();
+  RequireInvalidLayout(session.value, invalid_second.data(),
+                       invalid_second.size(), viewport, 0U, harness,
+                       "an invalid second renderer was accepted");
+
+  auto oversized_descriptor = layers;
+  oversized_descriptor[0].struct_size =
+      sizeof(VtkFlutterRenderLayer) + sizeof(std::uint32_t);
+  RequireInvalidLayout(session.value, oversized_descriptor.data(),
+                       oversized_descriptor.size(), viewport, 0U, harness,
+                       "a non-exact render layer struct_size was accepted");
+
+  auto unsupported_version = layers;
+  ++unsupported_version[0].version;
+  RequireInvalidLayout(session.value, unsupported_version.data(),
+                       unsupported_version.size(), viewport, 0U, harness,
+                       "an unsupported render layer version was accepted");
+
+  auto duplicate = layers;
+  duplicate[1].renderer = duplicate[0].renderer;
+  RequireInvalidLayout(session.value, duplicate.data(), duplicate.size(),
+                       viewport, 0U, harness,
+                       "a duplicate renderer was accepted");
+
+  auto overlapping = layers;
+  overlapping[1].right = 0.75;
+  overlapping[1].top = 0.75;
+  RequireInvalidLayout(session.value, overlapping.data(), overlapping.size(),
+                       viewport, 0U, harness,
+                       "overlapping render viewports were accepted");
+
+  auto non_finite = layers;
+  non_finite[0].left = std::numeric_limits<double>::infinity();
+  RequireInvalidLayout(session.value, non_finite.data(), non_finite.size(),
+                       viewport, 0U, harness,
+                       "a non-finite viewport was accepted");
+
+  auto out_of_range = layers;
+  out_of_range[1].top = 1.01;
+  RequireInvalidLayout(session.value, out_of_range.data(), out_of_range.size(),
+                       viewport, 0U, harness,
+                       "an out-of-range viewport was accepted");
+
+  auto inverted = layers;
+  inverted[0].right = inverted[0].left;
+  RequireInvalidLayout(session.value, inverted.data(), inverted.size(),
+                       viewport, 0U, harness, "an empty viewport was accepted");
+
+  auto vertically_inverted = layers;
+  vertically_inverted[0].top = vertically_inverted[0].bottom;
+  RequireInvalidLayout(session.value, vertically_inverted.data(),
+                       vertically_inverted.size(), viewport, 0U, harness,
+                       "a vertically empty viewport was accepted");
+
+  RequireInvalidLayout(session.value, layers.data(), 0U, viewport, 0U, harness,
+                       "an empty layout was accepted");
+  RequireInvalidLayout(session.value, layers.data(),
+                       VTK_FLUTTER_MAX_RENDER_LAYERS + 1U, viewport, 0U,
+                       harness, "more than 64 render layers were accepted");
+  RequireInvalidLayout(session.value, layers.data(), layers.size(), viewport,
+                       layers.size(), harness,
+                       "an invalid primary layer was accepted");
+
+  const auto wrong_type = CreateObject(session.value, "vtkActor");
+  auto non_renderer = layers;
+  non_renderer[1].renderer = wrong_type;
+  RequireInvalidLayout(session.value, non_renderer.data(), non_renderer.size(),
+                       viewport, 0U, harness,
+                       "a non-renderer object was accepted");
+
+  RequireInvalidLayout(session.value, nullptr, 1U, viewport, 0U, harness,
+                       "a null render layer array was accepted");
+
+  const auto presented_before_failure = harness.presented_pixels;
+  harness.end_result = VTK_FLUTTER_STATUS_INTERNAL_ERROR;
+  VtkFlutterFrameMetrics failed_metrics{};
+  const auto failed_render = vtk_flutter_session_render_layout(
+      session.value, layers.data(), layers.size(), &viewport, 1U,
+      &failed_metrics, &status);
+  Require(failed_render == VTK_FLUTTER_STATUS_INTERNAL_ERROR,
+          "end_frame failure was not propagated");
+  Require(harness.cancel_count == 1,
+          "failed layout did not cancel its frame transaction");
+  Require(harness.presented_pixels == presented_before_failure,
+          "failed layout replaced the last complete frame");
+
+  harness.end_result = VTK_FLUTTER_STATUS_OK;
+  constexpr VtkFlutterViewport primary_viewport{32, 16};
+  VtkFlutterFrameMetrics legacy_metrics{};
+  RequireOk(vtk_flutter_session_render(session.value, lower_left,
+                                       &primary_viewport, &legacy_metrics,
+                                       &status),
+            status, "legacy session_render after failed layout");
+  Require(legacy_metrics.world_to_clip_valid == 1,
+          "legacy render omitted world-to-clip matrix");
+  RequireColor(PixelAt(harness.presented_pixels, primary_viewport.width, 1, 1),
+               {255, 0, 0, 255},
+               "legacy render did not use the complete viewport");
+  RequireColor(PixelAt(harness.presented_pixels, primary_viewport.width, 30,
+                       14),
+               {255, 0, 0, 255},
+               "legacy render retained the previous layout viewport");
+  for (std::size_t index = 0; index < 16; ++index) {
+    Require(std::abs(layout_metrics.world_to_clip[index] -
+                     legacy_metrics.world_to_clip[index]) < 1e-12,
+            "layout transform did not use the primary viewport aspect ratio");
+  }
+  Require(harness.begin_count == 3 && harness.end_count == 3 &&
+              harness.cancel_count == 1,
+          "renderers were not reusable after a failed layout");
+
+  RequireOk(api->session_detach_texture_target(session.value, target, &status),
+            status, "session_detach_texture_target");
+  RequireOk(api->texture_target_destroy(target, &status), status,
+            "texture_target_destroy");
 }
 
 void TestSurfaceRender() {
@@ -330,6 +569,7 @@ int main(int argc, char **argv) {
     } else if (test_case == "generic_session") {
       TestGenericSession();
     } else if (test_case == "surface_render") {
+      TestLayoutRender();
       TestSurfaceRender();
     } else {
       throw std::runtime_error("unknown test case");

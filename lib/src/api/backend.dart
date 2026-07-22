@@ -37,7 +37,29 @@ abstract interface class VtkBackendSession {
     required VtkViewport viewport,
   });
 
+  Future<VtkRenderResult> renderLayout({
+    required List<VtkBackendRenderLayer> layers,
+    required VtkViewport viewport,
+    required int primaryLayer,
+  });
+
   Future<void> close();
+}
+
+final class VtkBackendRenderLayer {
+  const VtkBackendRenderLayer({required this.renderer, required this.viewport});
+
+  final VtkBackendObjectHandle renderer;
+  final VtkNormalizedViewport viewport;
+
+  @override
+  bool operator ==(Object other) =>
+      other is VtkBackendRenderLayer &&
+      other.renderer == renderer &&
+      other.viewport == viewport;
+
+  @override
+  int get hashCode => Object.hash(renderer, viewport);
 }
 
 /// Optional backend extension used by the separately imported experimental API.

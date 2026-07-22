@@ -34,6 +34,23 @@ void main() {
       expect(backend.sessions, hasLength(3));
       for (final session in backend.sessions) {
         expect(session.calls, isNotEmpty);
+        final layers = session.lastRenderLayers;
+        expect(layers, hasLength(2));
+        if (layers == null) fail('The showcase did not record a layout');
+        expect(session.lastPrimaryLayer, 0);
+        expect(layers[0].renderer, isNot(layers[1].renderer));
+        expect(layers[0].viewport.left, 0);
+        expect(layers[0].viewport.right, 0.75);
+        expect(layers[1].viewport.left, 0.75);
+        expect(layers[1].viewport.right, 1);
+        expect(
+          session.objectTypeOf(layers[0].renderer),
+          VtkObjectType.renderer,
+        );
+        expect(
+          session.objectTypeOf(layers[1].renderer),
+          VtkObjectType.renderer,
+        );
       }
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());

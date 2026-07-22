@@ -39,6 +39,8 @@ final class RecordingVtkBackendSession implements VtkBackendSession {
   final imageInputs = <VtkScalarImageInput>[];
   final calls = <RecordedVtkCall>[];
   final destroyedObjects = <VtkBackendObjectHandle>[];
+  List<VtkBackendRenderLayer>? lastRenderLayers;
+  int? lastPrimaryLayer;
   final _objectTypes = <VtkBackendObjectHandle, VtkObjectType>{};
   final _outputSources = <VtkBackendObjectHandle, VtkBackendObjectHandle>{};
   int closeCount = 0;
@@ -102,16 +104,36 @@ final class RecordingVtkBackendSession implements VtkBackendSession {
   Future<VtkRenderResult> render({
     required VtkBackendObjectHandle renderer,
     required VtkViewport viewport,
-  }) async => VtkRenderResult(
+  }) => renderLayout(
+    layers: [
+      VtkBackendRenderLayer(
+        renderer: renderer,
+        viewport: VtkNormalizedViewport.full,
+      ),
+    ],
     viewport: viewport,
-    frameBytes: viewport.pixelCount * 4,
-    surfaceAllocationBytes: viewport.pixelCount * 4,
-    renderTime: const Duration(milliseconds: 1),
-    surfaceSubmitTime: Duration.zero,
-    gpuSyncWaitTime: Duration.zero,
-    cpuReadbackTime: Duration.zero,
-    worldToClip: VtkMatrix4.identity(),
+    primaryLayer: 0,
   );
+
+  @override
+  Future<VtkRenderResult> renderLayout({
+    required List<VtkBackendRenderLayer> layers,
+    required VtkViewport viewport,
+    required int primaryLayer,
+  }) async {
+    lastRenderLayers = List.unmodifiable(layers);
+    lastPrimaryLayer = primaryLayer;
+    return VtkRenderResult(
+      viewport: viewport,
+      frameBytes: viewport.pixelCount * 4,
+      surfaceAllocationBytes: viewport.pixelCount * 4,
+      renderTime: const Duration(milliseconds: 1),
+      surfaceSubmitTime: Duration.zero,
+      gpuSyncWaitTime: Duration.zero,
+      cpuReadbackTime: Duration.zero,
+      worldToClip: VtkMatrix4.identity(),
+    );
+  }
 
   @override
   Future<void> close() async {

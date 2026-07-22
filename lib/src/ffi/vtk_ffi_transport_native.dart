@@ -9,8 +9,27 @@ import 'vtk_flutter_bindings.g.dart';
 
 VtkFfiTransport createDefaultVtkFfiTransport() => VtkNativeFfiTransport();
 
+typedef VtkNativeRenderLayoutCall =
+    int Function(
+      Pointer<VtkFlutterSession> session,
+      Pointer<VtkFlutterRenderLayer> layers,
+      int layerCount,
+      Pointer<VtkFlutterViewport> viewport,
+      int primaryLayer,
+      Pointer<VtkFlutterFrameMetrics> metrics,
+      Pointer<VtkFlutterStatus> status,
+    );
+
 final class VtkNativeFfiTransport implements VtkFfiTransport {
-  bool _validated = false;
+  VtkNativeFfiTransport({
+    VtkNativeRenderLayoutCall? renderLayoutCall,
+    bool bindingsAlreadyValidated = false,
+  }) : _renderLayoutCall =
+           renderLayoutCall ?? vtk_flutter_session_render_layout,
+       _validated = bindingsAlreadyValidated;
+
+  final VtkNativeRenderLayoutCall _renderLayoutCall;
+  bool _validated;
 
   @override
   int get presentationApiAddress {
@@ -230,51 +249,62 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
     required int sessionAddress,
     required VtkBackendObjectHandle renderer,
     required VtkViewport viewport,
+  }) => renderLayout(
+    sessionAddress: sessionAddress,
+    layers: [
+      VtkBackendRenderLayer(
+        renderer: renderer,
+        viewport: VtkNormalizedViewport.full,
+      ),
+    ],
+    viewport: viewport,
+    primaryLayer: 0,
+  );
+
+  @override
+  Future<VtkRenderResult> renderLayout({
+    required int sessionAddress,
+    required List<VtkBackendRenderLayer> layers,
+    required VtkViewport viewport,
+    required int primaryLayer,
   }) async {
+    _validateRenderLayout(layers: layers, primaryLayer: primaryLayer);
+    final nativeLayers = calloc<VtkFlutterRenderLayer>(layers.length);
     final nativeViewport = calloc<VtkFlutterViewport>();
     final metrics = calloc<VtkFlutterFrameMetrics>();
     final status = calloc<VtkFlutterStatus>();
     try {
+      for (var index = 0; index < layers.length; index++) {
+        final layer = layers[index];
+        nativeLayers[index]
+          ..struct_size = sizeOf<VtkFlutterRenderLayer>()
+          ..version = VTK_FLUTTER_RENDER_LAYER_VERSION
+          ..renderer = layer.renderer.value
+          ..left = layer.viewport.left
+          ..bottom = layer.viewport.bottom
+          ..right = layer.viewport.right
+          ..top = layer.viewport.top;
+      }
       nativeViewport.ref
         ..width = viewport.width
         ..height = viewport.height;
       _validateBindings();
-      final result = vtk_flutter_session_render(
+      final result = _renderLayoutCall(
         _session(sessionAddress),
-        renderer.value,
+        nativeLayers,
+        layers.length,
         nativeViewport,
+        primaryLayer,
         metrics,
         status,
       );
       _throwIfFailed(result: result, status: status);
-      return VtkRenderResult(
-        viewport: VtkViewport(
-          width: metrics.ref.frame_width,
-          height: metrics.ref.frame_height,
-        ),
-        frameBytes: metrics.ref.frame_bytes,
-        surfaceAllocationBytes: metrics.ref.surface_allocation_bytes,
-        renderTime: _durationFromMilliseconds(metrics.ref.render_ms),
-        surfaceSubmitTime: _durationFromMilliseconds(
-          metrics.ref.surface_submit_ms,
-        ),
-        gpuSyncWaitTime: _durationFromMilliseconds(
-          metrics.ref.gpu_sync_wait_ms,
-        ),
-        cpuReadbackTime: _durationFromMilliseconds(metrics.ref.cpu_readback_ms),
-        worldToClip: metrics.ref.world_to_clip_valid == 0
-            ? null
-            : VtkMatrix4(
-                values: [
-                  for (var index = 0; index < 16; index++)
-                    metrics.ref.world_to_clip[index],
-                ],
-              ),
-      );
+      return _renderResult(metrics.ref);
     } finally {
       calloc.free(status);
       calloc.free(metrics);
       calloc.free(nativeViewport);
+      calloc.free(nativeLayers);
     }
   }
 
@@ -298,6 +328,56 @@ final class VtkNativeFfiTransport implements VtkFfiTransport {
     }
   }
 }
+
+void _validateRenderLayout({
+  required List<VtkBackendRenderLayer> layers,
+  required int primaryLayer,
+}) {
+  if (layers.isEmpty || layers.length > VTK_FLUTTER_MAX_RENDER_LAYERS) {
+    throw VtkApiValidationException(
+      field: 'layers',
+      message:
+          'Native render layouts require between 1 and '
+          '$VTK_FLUTTER_MAX_RENDER_LAYERS layers',
+    );
+  }
+  if (primaryLayer < 0 || primaryLayer >= layers.length) {
+    throw const VtkApiValidationException(
+      field: 'primaryLayer',
+      message: 'Primary layer must identify a layer in the layout',
+    );
+  }
+  for (var index = 0; index < layers.length; index++) {
+    if (layers[index].renderer.value <= 0) {
+      throw VtkApiValidationException(
+        field: 'layers[$index].renderer',
+        message: 'Renderer handles must be positive',
+      );
+    }
+  }
+}
+
+VtkRenderResult _renderResult(VtkFlutterFrameMetrics metrics) =>
+    VtkRenderResult(
+      viewport: VtkViewport(
+        width: metrics.frame_width,
+        height: metrics.frame_height,
+      ),
+      frameBytes: metrics.frame_bytes,
+      surfaceAllocationBytes: metrics.surface_allocation_bytes,
+      renderTime: _durationFromMilliseconds(metrics.render_ms),
+      surfaceSubmitTime: _durationFromMilliseconds(metrics.surface_submit_ms),
+      gpuSyncWaitTime: _durationFromMilliseconds(metrics.gpu_sync_wait_ms),
+      cpuReadbackTime: _durationFromMilliseconds(metrics.cpu_readback_ms),
+      worldToClip: metrics.world_to_clip_valid == 0
+          ? null
+          : VtkMatrix4(
+              values: [
+                for (var index = 0; index < 16; index++)
+                  metrics.world_to_clip[index],
+              ],
+            ),
+    );
 
 /// One serialized VTK invocation produced by the native transport mapping.
 ///

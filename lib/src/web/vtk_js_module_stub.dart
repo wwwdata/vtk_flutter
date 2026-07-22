@@ -42,5 +42,14 @@ final class VtkJsModule implements VtkWebModule {
   }) => _unsupported();
 
   @override
+  Future<VtkWebRenderFrame> renderLayout({
+    required int sessionId,
+    required List<VtkWebRenderLayer> layers,
+    required int width,
+    required int height,
+    required int primaryLayer,
+  }) => _unsupported();
+
+  @override
   Future<void> closeSession(int sessionId) => _unsupported();
 }

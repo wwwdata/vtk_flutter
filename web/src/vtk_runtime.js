@@ -23,6 +23,7 @@ import vtkVolumeProperty from '@kitware/vtk.js/Rendering/Core/VolumeProperty.js'
 import vtkWindowedSincPolyDataFilter from '@kitware/vtk.js/Filters/General/WindowedSincPolyDataFilter.js';
 
 const maximumImageBytes = 256 * 1024 * 1024;
+const maximumRenderLayers = 64;
 const captureTimeoutMilliseconds = 15_000;
 
 export const createFlyingEdges3D = () =>
@@ -212,6 +213,12 @@ const expectFiniteNumber = (value, name) => {
     fail(`${name} must be finite`);
   }
   return value;
+};
+
+const expectUnitInterval = (value, name) => {
+  const number = expectFiniteNumber(value, name);
+  if (number < 0 || number > 1) fail(`${name} must be between 0 and 1`);
+  return number;
 };
 
 const expectBoolean = (value, name) => {
@@ -412,69 +419,94 @@ const withCaptureGuard = async (canvas, capture) => {
   }
 };
 
-const createRenderTarget = () => {
-  const container = createContainer();
-  const genericRenderWindow = vtkGenericRenderWindow.newInstance({
+export const createRenderTarget = ({
+  container = createContainer(),
+  genericRenderWindow = vtkGenericRenderWindow.newInstance({
     background: [0, 0, 0, 0],
     listenWindowResize: false,
-  });
+  }),
+} = {}) => {
   genericRenderWindow.setContainer(container);
   const renderWindow = genericRenderWindow.getRenderWindow();
   const defaultRenderer = genericRenderWindow.getRenderer();
   const apiSpecificRenderWindow =
     genericRenderWindow.getApiSpecificRenderWindow();
-  let attachedRenderer = defaultRenderer;
+  const attachedRenderers = new Set([defaultRenderer]);
+
+  const detach = (renderer) => {
+    if (!attachedRenderers.delete(renderer)) return;
+    renderWindow.removeRenderer(renderer);
+  };
+
+  const clear = (width, height) => {
+    const context = apiSpecificRenderWindow.getContext();
+    context.enable(context.SCISSOR_TEST);
+    context.scissor(0, 0, width, height);
+    context.viewport(0, 0, width, height);
+    context.colorMask(true, true, true, true);
+    context.depthMask(true);
+    context.clearColor(0, 0, 0, 0);
+    context.clearDepth(1);
+    context.clear(context.COLOR_BUFFER_BIT | context.DEPTH_BUFFER_BIT);
+  };
 
   return {
-    detach(renderer) {
-      if (attachedRenderer !== renderer) return;
-      renderWindow.removeRenderer(renderer);
-      attachedRenderer = null;
-    },
-    async render(renderer, width, height) {
-      if (attachedRenderer !== renderer) {
-        if (attachedRenderer) renderWindow.removeRenderer(attachedRenderer);
-        renderWindow.addRenderer(renderer);
-        attachedRenderer = renderer;
-      }
+    detach,
+    async renderLayout(layers, width, height, primaryLayer) {
+      for (const renderer of [...attachedRenderers]) detach(renderer);
       container.style.width = `${width}px`;
       container.style.height = `${height}px`;
       apiSpecificRenderWindow.setSize(width, height);
 
-      const renderStart = now();
-      renderWindow.render();
-      const renderMicroseconds = Math.round((now() - renderStart) * 1000);
+      try {
+        clear(width, height);
+        for (const layer of layers) {
+          layer.renderer.setViewport(...layer.viewport);
+          renderWindow.addRenderer(layer.renderer);
+          attachedRenderers.add(layer.renderer);
+        }
 
-      const captureStart = now();
-      const pngDataUrl = await withCaptureGuard(
-        apiSpecificRenderWindow.getCanvas(),
-        async () => {
-          const capture = apiSpecificRenderWindow.captureNextImage('image/png');
-          renderWindow.render();
-          return capture;
-        },
-      );
-      const captureMicroseconds = Math.round((now() - captureStart) * 1000);
-      const camera = renderer.getActiveCamera();
-      const worldToClip = Array.from(
-        camera.getCompositeProjectionMatrix(width / height, -1, 1),
-      );
-      if (
-        worldToClip.length !== 16 ||
-        worldToClip.some((value) => !Number.isFinite(value))
-      ) {
-        fail('renderer returned an invalid world-to-clip matrix');
+        let renderMicroseconds = 0;
+        const captureStart = now();
+        const pngDataUrl = await withCaptureGuard(
+          apiSpecificRenderWindow.getCanvas(),
+          async () => {
+            const capture = apiSpecificRenderWindow.captureNextImage('image/png');
+            const renderStart = now();
+            renderWindow.render();
+            renderMicroseconds = Math.round((now() - renderStart) * 1000);
+            return capture;
+          },
+        );
+        const captureMicroseconds = Math.round((now() - captureStart) * 1000);
+        const primary = layers[primaryLayer];
+        const [left, bottom, right, top] = primary.viewport;
+        const pixelAspect =
+          (width * (right - left)) / (height * (top - bottom));
+        const camera = primary.renderer.getActiveCamera();
+        const worldToClip = Array.from(
+          camera.getCompositeProjectionMatrix(pixelAspect, -1, 1),
+        );
+        if (
+          worldToClip.length !== 16 ||
+          worldToClip.some((value) => !Number.isFinite(value))
+        ) {
+          fail('renderer returned an invalid world-to-clip matrix');
+        }
+        return {
+          pngDataUrl,
+          width,
+          height,
+          renderMicroseconds,
+          captureMicroseconds,
+          worldToClip,
+        };
+      } finally {
+        for (const renderer of [...attachedRenderers]) detach(renderer);
       }
-      return {
-        pngDataUrl,
-        width,
-        height,
-        renderMicroseconds,
-        captureMicroseconds,
-        worldToClip,
-      };
     },
     dispose() {
+      for (const renderer of [...attachedRenderers]) detach(renderer);
       genericRenderWindow.delete();
       container.remove();
     },
@@ -866,11 +898,12 @@ export const getCapabilities = () => ({
   })),
 });
 
-export const openSession = async () => {
+export const openSession = async (renderTargetFactory = createRenderTarget) => {
   const sessionId = nextSessionId++;
   sessions.set(sessionId, {
     objects: new Map(),
     renderTarget: null,
+    renderTargetFactory,
   });
   return sessionId;
 };
@@ -926,22 +959,116 @@ export const destroyObject = async (sessionId, handle) => {
   }
 };
 
-export const render = async (sessionId, rendererHandle, viewport) => {
+const validateNormalizedViewport = (viewport, name) => {
+  if (!viewport || typeof viewport !== 'object') {
+    fail(`${name} is required`);
+  }
+  const left = expectUnitInterval(viewport.left, `${name}.left`);
+  const bottom = expectUnitInterval(viewport.bottom, `${name}.bottom`);
+  const right = expectUnitInterval(viewport.right, `${name}.right`);
+  const top = expectUnitInterval(viewport.top, `${name}.top`);
+  if (left >= right) fail(`${name}.left must be less than right`);
+  if (bottom >= top) fail(`${name}.bottom must be less than top`);
+  return [left, bottom, right, top];
+};
+
+const viewportsOverlap = (first, second) =>
+  first[0] < second[2] &&
+  second[0] < first[2] &&
+  first[1] < second[3] &&
+  second[1] < first[3];
+
+export const renderLayout = async (
+  sessionId,
+  layers,
+  viewport,
+  primaryLayer = 0,
+) => {
   const session = sessionFor(sessionId);
-  const renderer = objectFor(
-    session,
-    rendererHandle,
-    ['renderer'],
-    'renderer',
-  );
+  if (!Array.isArray(layers) || layers.length === 0) {
+    fail('layers must contain at least one render layer');
+  }
+  if (layers.length > maximumRenderLayers) {
+    fail(`layers must contain at most ${maximumRenderLayers} render layers`);
+  }
   if (!viewport || typeof viewport !== 'object') {
     fail('viewport is required');
   }
   const width = expectPositiveInteger(viewport.width, 'viewport width');
   const height = expectPositiveInteger(viewport.height, 'viewport height');
-  session.renderTarget ??= createRenderTarget();
-  return session.renderTarget.render(renderer.instance, width, height);
+  const primary = expectNonNegativeInteger(primaryLayer, 'primaryLayer');
+  if (primary >= layers.length) {
+    fail('primaryLayer must identify a render layer');
+  }
+
+  const rendererHandles = new Set();
+  const validatedLayers = [];
+  for (let index = 0; index < layers.length; index++) {
+    const layer = layers[index];
+    if (!layer || typeof layer !== 'object') {
+      fail(`layers[${index}] is required`);
+    }
+    const rendererHandle = expectPositiveInteger(
+      layer.renderer,
+      `layers[${index}].renderer`,
+    );
+    if (rendererHandles.has(rendererHandle)) {
+      fail(`layers[${index}].renderer is duplicated`);
+    }
+    rendererHandles.add(rendererHandle);
+    const renderer = objectFor(
+      session,
+      rendererHandle,
+      ['renderer'],
+      `layers[${index}].renderer`,
+    );
+    const normalizedViewport = validateNormalizedViewport(
+      layer.viewport,
+      `layers[${index}].viewport`,
+    );
+    for (let previous = 0; previous < index; previous++) {
+      if (
+        viewportsOverlap(
+          normalizedViewport,
+          validatedLayers[previous].viewport,
+        )
+      ) {
+        fail(`layers[${index}].viewport overlaps another render layer`);
+      }
+    }
+    validatedLayers.push({
+      renderer: renderer.instance,
+      viewport: normalizedViewport,
+    });
+  }
+
+  const renderTarget = (session.renderTarget ??= session.renderTargetFactory());
+  try {
+    return await renderTarget.renderLayout(
+      validatedLayers,
+      width,
+      height,
+      primary,
+    );
+  } catch (error) {
+    session.renderTarget = null;
+    renderTarget.dispose();
+    throw error;
+  }
 };
+
+export const render = async (sessionId, rendererHandle, viewport) =>
+  renderLayout(
+    sessionId,
+    [
+      {
+        renderer: rendererHandle,
+        viewport: { left: 0, bottom: 0, right: 1, top: 1 },
+      },
+    ],
+    viewport,
+    0,
+  );
 
 export const closeSession = async (sessionId) => {
   expectPositiveInteger(sessionId, 'sessionId');

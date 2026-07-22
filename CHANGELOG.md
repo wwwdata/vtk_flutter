@@ -11,6 +11,8 @@
   vtk.js Web backend.
 - Separate package/Web quality checks, native build qualification, and gated
   native artifact releases. The package remains unpublished.
+- Add atomic, disjoint multi-renderer layouts within one session, render
+  window, frame transaction, and Flutter texture.
 
 ## 0.1.0-dev.1 (unpublished)
 

@@ -239,15 +239,84 @@ final class VtkSession {
   Future<VtkRenderResult> render({
     required VtkRenderer renderer,
     required VtkViewport viewport,
+  }) => renderLayout(
+    layers: [
+      VtkRenderLayer(renderer: renderer, viewport: VtkNormalizedViewport.full),
+    ],
+    viewport: viewport,
+  );
+
+  Future<VtkRenderResult> renderLayout({
+    required List<VtkRenderLayer> layers,
+    required VtkViewport viewport,
+    int primaryLayer = 0,
   }) async {
     if (!capabilities.supportsRendering) {
       throw const VtkApiStateException(
         'The backend does not support rendering',
       );
     }
-    final rendererHandle = _handleOf(renderer);
+    if (layers.isEmpty) {
+      throw const VtkApiValidationException(
+        field: 'layers',
+        message: 'A render layout must contain at least one layer',
+      );
+    }
+    if (layers.length > vtkMaximumRenderLayers) {
+      throw const VtkApiValidationException(
+        field: 'layers',
+        message: 'A render layout exceeds the maximum layer count',
+      );
+    }
+    if (primaryLayer < 0 || primaryLayer >= layers.length) {
+      throw const VtkApiValidationException(
+        field: 'primaryLayer',
+        message: 'Primary layer must identify a layer in the layout',
+      );
+    }
+    final backendLayers = <VtkBackendRenderLayer>[];
+    final ownedRenderers = <VtkRenderer>[];
+    final rendererHandles = <VtkBackendObjectHandle>{};
+    for (var index = 0; index < layers.length; index++) {
+      final layer = layers[index];
+      final rendererHandle = _handleOf(layer.renderer);
+      if (!rendererHandles.add(rendererHandle)) {
+        throw VtkApiValidationException(
+          field: 'layers[$index].renderer',
+          message: 'A renderer can appear only once in a render layout',
+        );
+      }
+      for (var previous = 0; previous < index; previous++) {
+        if (_viewportsOverlap(layer.viewport, layers[previous].viewport)) {
+          throw VtkApiValidationException(
+            field: 'layers[$index].viewport',
+            message: 'Render layer viewports cannot overlap',
+          );
+        }
+      }
+      backendLayers.add(
+        VtkBackendRenderLayer(
+          renderer: rendererHandle,
+          viewport: layer.viewport,
+        ),
+      );
+      ownedRenderers.add(layer.renderer);
+    }
+    final immutableBackendLayers = List<VtkBackendRenderLayer>.unmodifiable(
+      backendLayers,
+    );
+    final immutableOwnedRenderers = List<VtkRenderer>.unmodifiable(
+      ownedRenderers,
+    );
     return _queue.add(() async {
-      return _backend.render(renderer: rendererHandle, viewport: viewport);
+      for (final renderer in immutableOwnedRenderers) {
+        renderer._ensureUsable();
+      }
+      return _backend.renderLayout(
+        layers: immutableBackendLayers,
+        viewport: viewport,
+        primaryLayer: primaryLayer,
+      );
     });
   }
 
@@ -484,6 +553,15 @@ final class VtkSession {
     }
   }
 }
+
+bool _viewportsOverlap(
+  VtkNormalizedViewport first,
+  VtkNormalizedViewport second,
+) =>
+    first.left < second.right &&
+    second.left < first.right &&
+    first.bottom < second.top &&
+    second.bottom < first.top;
 
 final class _SerialQueue {
   Future<void> _tail = Future.value();

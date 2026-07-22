@@ -6,6 +6,19 @@ import 'package:vtk_flutter/vtk_flutter.dart';
 import 'recipes.dart';
 import 'scalar_field.dart';
 
+final _showcasePrimaryViewport = VtkNormalizedViewport(
+  left: 0,
+  bottom: 0,
+  right: 0.75,
+  top: 1,
+);
+final _showcaseCompanionViewport = VtkNormalizedViewport(
+  left: 0.75,
+  bottom: 0,
+  right: 1,
+  top: 1,
+);
+
 void main() => runApp(const ShowcaseApp());
 
 final class ShowcaseApp extends StatelessWidget {
@@ -43,6 +56,7 @@ final class _ShowcasePageState extends State<ShowcasePage>
   VtkCapabilities? _capabilities;
   VtkSession? _session;
   VtkRecipeScene? _scene;
+  VtkRenderer? _companionRenderer;
   VtkRenderResult? _renderResult;
   ShowcaseRecipe? _renderedRecipe;
   int _completedRenderCount = 0;
@@ -137,6 +151,7 @@ final class _ShowcasePageState extends State<ShowcasePage>
       setState(() {
         _session = null;
         _scene = null;
+        _companionRenderer = null;
         _renderResult = null;
         _renderedRecipe = null;
       });
@@ -185,9 +200,15 @@ final class _ShowcasePageState extends State<ShowcasePage>
           ),
         ),
       };
+      final companionRenderer = await session.createRenderer();
+      await companionRenderer.setBackground(
+        VtkColor(red: 0.03, green: 0.22, blue: 0.28),
+      );
       stopwatch.stop();
-      final result = await session.render(
-        renderer: scene.renderer,
+      final result = await _renderLayout(
+        session: session,
+        scene: scene,
+        companionRenderer: companionRenderer,
         viewport: _viewport,
       );
       if (!mounted) {
@@ -197,6 +218,7 @@ final class _ShowcasePageState extends State<ShowcasePage>
       setState(() {
         _session = session;
         _scene = scene;
+        _companionRenderer = companionRenderer;
         _pipelineBuildTime = stopwatch.elapsed;
         _renderResult = result;
         _renderedRecipe = _recipe;
@@ -211,9 +233,12 @@ final class _ShowcasePageState extends State<ShowcasePage>
   Future<void> _renderCurrentScene() async {
     final session = _session;
     final scene = _scene;
-    if (session == null || scene == null) return;
-    final result = await session.render(
-      renderer: scene.renderer,
+    final companionRenderer = _companionRenderer;
+    if (session == null || scene == null || companionRenderer == null) return;
+    final result = await _renderLayout(
+      session: session,
+      scene: scene,
+      companionRenderer: companionRenderer,
       viewport: _viewport,
     );
     if (mounted) {
@@ -228,9 +253,12 @@ final class _ShowcasePageState extends State<ShowcasePage>
   Future<void> _resizeAndRender(VtkViewport viewport) async {
     final session = _session;
     final scene = _scene;
-    if (session == null || scene == null) return;
-    final result = await session.render(
-      renderer: scene.renderer,
+    final companionRenderer = _companionRenderer;
+    if (session == null || scene == null || companionRenderer == null) return;
+    final result = await _renderLayout(
+      session: session,
+      scene: scene,
+      companionRenderer: companionRenderer,
       viewport: viewport,
     );
     if (mounted) {
@@ -397,7 +425,8 @@ final class _ShowcasePageState extends State<ShowcasePage>
                       ),
                       child: Text(
                         '${_renderedRecipe?.label ?? 'Preparing'}  •  '
-                        '${_viewport.width} × ${_viewport.height}',
+                        '${_viewport.width} × ${_viewport.height}  •  '
+                        '2 renderers',
                       ),
                     ),
                   ),
@@ -789,6 +818,25 @@ final class _ShowcasePageState extends State<ShowcasePage>
     return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MiB';
   }
 }
+
+Future<VtkRenderResult> _renderLayout({
+  required VtkSession session,
+  required VtkRecipeScene scene,
+  required VtkRenderer companionRenderer,
+  required VtkViewport viewport,
+}) => session.renderLayout(
+  layers: [
+    VtkRenderLayer(
+      renderer: scene.renderer,
+      viewport: _showcasePrimaryViewport,
+    ),
+    VtkRenderLayer(
+      renderer: companionRenderer,
+      viewport: _showcaseCompanionViewport,
+    ),
+  ],
+  viewport: viewport,
+);
 
 final class _CenteredMessage extends StatelessWidget {
   const _CenteredMessage({required this.message, this.color});

@@ -241,14 +241,48 @@ final class VtkWebBackendSession
   Future<VtkRenderResult> render({
     required VtkBackendObjectHandle renderer,
     required VtkViewport viewport,
+  }) => renderLayout(
+    layers: [
+      VtkBackendRenderLayer(
+        renderer: renderer,
+        viewport: VtkNormalizedViewport.full,
+      ),
+    ],
+    viewport: viewport,
+    primaryLayer: 0,
+  );
+
+  @override
+  Future<VtkRenderResult> renderLayout({
+    required List<VtkBackendRenderLayer> layers,
+    required VtkViewport viewport,
+    required int primaryLayer,
   }) async {
     _ensureOpen();
+    for (var index = 0; index < layers.length; index++) {
+      final handle = layers[index].renderer.value;
+      if (_objectTypes[handle] != VtkObjectType.renderer) {
+        throw VtkApiStateException(
+          'Render layer $index must identify a live renderer in this session',
+        );
+      }
+    }
     final frame = await _guard(
-      () => _module.render(
+      () => _module.renderLayout(
         sessionId: viewId,
-        renderer: renderer.value,
+        layers: [
+          for (final layer in layers)
+            VtkWebRenderLayer(
+              renderer: layer.renderer.value,
+              left: layer.viewport.left,
+              bottom: layer.viewport.bottom,
+              right: layer.viewport.right,
+              top: layer.viewport.top,
+            ),
+        ],
         width: viewport.width,
         height: viewport.height,
+        primaryLayer: primaryLayer,
       ),
     );
     if (frame.width != viewport.width || frame.height != viewport.height) {

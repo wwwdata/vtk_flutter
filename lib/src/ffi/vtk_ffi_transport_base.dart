@@ -46,4 +46,11 @@ abstract interface class VtkFfiTransport {
     required VtkBackendObjectHandle renderer,
     required VtkViewport viewport,
   });
+
+  Future<VtkRenderResult> renderLayout({
+    required int sessionAddress,
+    required List<VtkBackendRenderLayer> layers,
+    required VtkViewport viewport,
+    required int primaryLayer,
+  });
 }

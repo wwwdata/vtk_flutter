@@ -15,6 +15,8 @@
 #include VTK_NLOHMANN_JSON(json.hpp)
 // clang-format on
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -24,6 +26,8 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
+#include <vector>
 
 extern "C" int RegisterLibraries_vtkFlutter(
     void *serializer, void *deserializer, void *invoker, const char **error);
@@ -35,6 +39,7 @@ struct vtkSessionJsonImpl {
 namespace {
 constexpr std::size_t kFrameCallbacksSize =
     sizeof(VtkFlutterFrameCallbacks);
+constexpr std::size_t kRenderLayerSize = sizeof(VtkFlutterRenderLayer);
 constexpr std::uint64_t kMaximumUploadBytes = 256ULL * 1024ULL * 1024ULL;
 
 vtkSessionJson ParseJson(const char *text) {
@@ -136,6 +141,30 @@ void ValidateImage(const VtkFlutterImageData &image) {
   if (byte_count > kMaximumUploadBytes) {
     throw std::invalid_argument("image data exceeds the 256 MiB limit");
   }
+}
+
+void ValidateNormalizedViewport(const VtkFlutterRenderLayer &layer) {
+  const std::array values{layer.left, layer.bottom, layer.right, layer.top};
+  if (!std::all_of(values.begin(), values.end(), [](double value) {
+        return std::isfinite(value) && value >= 0.0 && value <= 1.0;
+      })) {
+    throw std::invalid_argument(
+        "render layer viewport values must be finite and within 0..1");
+  }
+  if (layer.left >= layer.right) {
+    throw std::invalid_argument(
+        "render layer viewport left must be less than right");
+  }
+  if (layer.bottom >= layer.top) {
+    throw std::invalid_argument(
+        "render layer viewport bottom must be less than top");
+  }
+}
+
+bool ViewportsOverlap(const VtkFlutterRenderLayer &first,
+                      const VtkFlutterRenderLayer &second) {
+  return first.left < second.right && second.left < first.right &&
+         first.bottom < second.top && second.bottom < first.top;
 }
 } // namespace
 
@@ -295,9 +324,11 @@ Session::CreateImageData(const VtkFlutterImageData &input) {
   return object;
 }
 
-void Session::Render(VtkFlutterObjectHandle renderer,
-                     const VtkFlutterViewport &viewport,
-                     VtkFlutterFrameMetrics &metrics) {
+void Session::RenderLayout(const VtkFlutterRenderLayer *layers,
+                           std::uint32_t layer_count,
+                           const VtkFlutterViewport &viewport,
+                           std::uint32_t primary_layer,
+                           VtkFlutterFrameMetrics &metrics) {
   Operation operation(*this);
   if (viewport.width <= 0 || viewport.height <= 0) {
     throw std::invalid_argument("viewport dimensions must be positive");
@@ -305,11 +336,44 @@ void Session::Render(VtkFlutterObjectHandle renderer,
   if (attached_target_ == nullptr) {
     throw RenderTargetUnavailable();
   }
-  auto renderer_object =
-      vtkRenderer::SafeDownCast(manager_->GetObjectAtId(renderer));
-  if (renderer_object == nullptr) {
-    throw std::invalid_argument(
-        "renderer must identify a vtkRenderer in this session");
+  if (layers == nullptr) {
+    throw std::invalid_argument("render layers are required");
+  }
+  if (layer_count == 0U || layer_count > VTK_FLUTTER_MAX_RENDER_LAYERS) {
+    throw std::invalid_argument("render layer count must be within 1..64");
+  }
+  if (primary_layer >= layer_count) {
+    throw std::invalid_argument("primary_layer must identify a render layer");
+  }
+
+  std::vector<vtk_flutter::RenderLayer> resolved_layers;
+  resolved_layers.reserve(layer_count);
+  std::unordered_set<VtkFlutterObjectHandle> renderer_handles;
+  renderer_handles.reserve(layer_count);
+  for (std::uint32_t index = 0; index < layer_count; ++index) {
+    const auto &layer = layers[index];
+    if (layer.struct_size != kRenderLayerSize ||
+        layer.version != VTK_FLUTTER_RENDER_LAYER_VERSION) {
+      throw std::invalid_argument("unsupported render layer descriptor");
+    }
+    ValidateNormalizedViewport(layer);
+    if (!renderer_handles.insert(layer.renderer).second) {
+      throw std::invalid_argument(
+          "a renderer can appear only once in a render layout");
+    }
+    for (std::uint32_t previous = 0; previous < index; ++previous) {
+      if (ViewportsOverlap(layer, layers[previous])) {
+        throw std::invalid_argument("render layer viewports cannot overlap");
+      }
+    }
+    auto renderer =
+        vtkRenderer::SafeDownCast(manager_->GetObjectAtId(layer.renderer));
+    if (renderer == nullptr) {
+      throw std::invalid_argument(
+          "renderer must identify a vtkRenderer in this session");
+    }
+    resolved_layers.push_back(
+        {renderer, {layer.left, layer.bottom, layer.right, layer.top}});
   }
 
   metrics = {};
@@ -317,7 +381,7 @@ void Session::Render(VtkFlutterObjectHandle renderer,
                         static_cast<std::uint64_t>(viewport.height) * 4ULL;
   metrics.frame_width = viewport.width;
   metrics.frame_height = viewport.height;
-  attached_target_->Render(renderer_object, viewport, metrics);
+  attached_target_->Render(resolved_layers, viewport, primary_layer, metrics);
 }
 
 void Session::AttachTextureTarget(VtkFlutterTextureTarget &target) {
@@ -399,7 +463,8 @@ void VtkFlutterTextureTarget::MarkDestroying() {
 }
 
 void VtkFlutterTextureTarget::Render(
-    vtkSmartPointer<vtkRenderer> renderer,
-    const VtkFlutterViewport &viewport, VtkFlutterFrameMetrics &metrics) {
-  render_target_->Render(std::move(renderer), viewport, metrics);
+    const std::vector<vtk_flutter::RenderLayer> &layers,
+    const VtkFlutterViewport &viewport, std::uint32_t primary_layer,
+    VtkFlutterFrameMetrics &metrics) {
+  render_target_->Render(layers, viewport, primary_layer, metrics);
 }

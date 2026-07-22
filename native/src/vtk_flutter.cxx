@@ -255,15 +255,36 @@ int32_t VTK_FLUTTER_CALL vtk_flutter_session_render(
     VtkFlutterSession *session, VtkFlutterObjectHandle renderer,
     const VtkFlutterViewport *viewport, VtkFlutterFrameMetrics *metrics,
     VtkFlutterStatus *status) {
-  if (viewport == nullptr || metrics == nullptr) {
+  const VtkFlutterRenderLayer layer{
+      sizeof(VtkFlutterRenderLayer),
+      VTK_FLUTTER_RENDER_LAYER_VERSION,
+      renderer,
+      0.0,
+      0.0,
+      1.0,
+      1.0,
+  };
+  return vtk_flutter_session_render_layout(session, &layer, 1U, viewport, 0U,
+                                           metrics, status);
+}
+
+int32_t VTK_FLUTTER_CALL vtk_flutter_session_render_layout(
+    VtkFlutterSession *session, const VtkFlutterRenderLayer *layers,
+    uint32_t layer_count, const VtkFlutterViewport *viewport,
+    uint32_t primary_layer, VtkFlutterFrameMetrics *metrics,
+    VtkFlutterStatus *status) {
+  if (metrics != nullptr) {
+    *metrics = {};
+  }
+  if (layers == nullptr || viewport == nullptr || metrics == nullptr) {
     SetStatus(status, VTK_FLUTTER_STATUS_INVALID_ARGUMENT,
-              "viewport and metrics are required");
+              "layers, viewport, and metrics are required");
     return VTK_FLUTTER_STATUS_INVALID_ARGUMENT;
   }
-  *metrics = {};
   VtkFlutterFrameMetrics rendered_metrics{};
   const auto code = WithLiveSession(session, status, [&](auto &value) {
-    value.Render(renderer, *viewport, rendered_metrics);
+    value.RenderLayout(layers, layer_count, *viewport, primary_layer,
+                       rendered_metrics);
   });
   if (code == VTK_FLUTTER_STATUS_OK) {
     *metrics = rendered_metrics;

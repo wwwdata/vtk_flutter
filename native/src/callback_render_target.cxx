@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -153,6 +154,33 @@ void RunOnRenderThread(std::function<void()> action) {
   action();
 #endif
 }
+
+class RendererAttachments final {
+public:
+  explicit RendererAttachments(vtkRenderWindow &window) : window_(window) {}
+
+  RendererAttachments(const RendererAttachments &) = delete;
+  RendererAttachments &operator=(const RendererAttachments &) = delete;
+
+  ~RendererAttachments() noexcept {
+    for (auto renderer = renderers_.rbegin(); renderer != renderers_.rend();
+         ++renderer) {
+      try {
+        window_.RemoveRenderer(*renderer);
+      } catch (...) {
+      }
+    }
+  }
+
+  void Add(const vtkSmartPointer<vtkRenderer> &renderer) {
+    renderers_.push_back(renderer);
+    window_.AddRenderer(renderer);
+  }
+
+private:
+  vtkRenderWindow &window_;
+  std::vector<vtkSmartPointer<vtkRenderer>> renderers_;
+};
 } // namespace
 
 class CallbackRenderTarget::Impl final {
@@ -173,15 +201,13 @@ public:
     }
   }
 
-  void Render(vtkSmartPointer<vtkRenderer> renderer,
-              const VtkFlutterViewport &viewport,
+  void Render(const std::vector<RenderLayer> &layers,
+              const VtkFlutterViewport &viewport, std::uint32_t primary_layer,
               const VtkFlutterCpuFrame &frame,
               VtkFlutterFrameMetrics &metrics) {
-    RunOnRenderThread(
-        [this, renderer = std::move(renderer), viewport, frame,
-         &metrics]() mutable {
-          RenderOnWorker(std::move(renderer), viewport, frame, metrics);
-        });
+    RunOnRenderThread([this, layers, viewport, primary_layer, frame, &metrics] {
+      RenderOnWorker(layers, viewport, primary_layer, frame, metrics);
+    });
   }
 
 private:
@@ -204,50 +230,63 @@ private:
     window_->SetAlphaBitPlanes(1);
     window_->SetMultiSamples(0);
     window_->SetSwapBuffers(0);
+
+    clear_renderer_ = vtkSmartPointer<vtkRenderer>::New();
+    if (clear_renderer_ == nullptr) {
+      throw std::runtime_error("VTK could not create a clear renderer");
+    }
+    clear_renderer_->SetViewport(0.0, 0.0, 1.0, 1.0);
+    clear_renderer_->SetLayer(0);
+    clear_renderer_->SetBackground(0.0, 0.0, 0.0);
+    clear_renderer_->SetBackgroundAlpha(0.0);
+    clear_renderer_->SetGradientBackground(false);
+    clear_renderer_->EraseOn();
   }
 
-  void RenderOnWorker(vtkSmartPointer<vtkRenderer> renderer,
+  void RenderOnWorker(const std::vector<RenderLayer> &layers,
                       const VtkFlutterViewport &viewport,
+                      std::uint32_t primary_layer,
                       const VtkFlutterCpuFrame &frame,
                       VtkFlutterFrameMetrics &metrics) {
     window_->SetSize(viewport.width, viewport.height);
     window_->GetRenderers()->RemoveAllItems();
-    window_->AddRenderer(renderer);
-
-    try {
-      const auto render_started = Clock::now();
-      window_->Render();
-      const auto render_finished = Clock::now();
-
-      CaptureWorldToClip(*renderer, metrics);
-
-      vtkNew<vtkUnsignedCharArray> pixels;
-      const auto readback_started = Clock::now();
-      if (window_->GetRGBACharPixelData(0, 0, viewport.width - 1,
-                                        viewport.height - 1, 0, pixels) == 0) {
-        throw std::runtime_error("VTK framebuffer readback failed");
-      }
-      const auto expected_values =
-          static_cast<vtkIdType>(viewport.width) * viewport.height * 4;
-      if (pixels->GetNumberOfValues() < expected_values) {
-        throw std::runtime_error("VTK framebuffer readback was incomplete");
-      }
-      CopyRgbaBottomUpToFrame(pixels->GetPointer(0), viewport, frame);
-      const auto readback_finished = Clock::now();
-
-      metrics.surface_allocation_bytes = frame.capacity_bytes;
-      metrics.render_ms = Milliseconds(render_finished - render_started);
-      metrics.gpu_sync_wait_ms = 0.0;
-      metrics.cpu_readback_ms =
-          Milliseconds(readback_finished - readback_started);
-    } catch (...) {
-      window_->RemoveRenderer(renderer);
-      throw;
+    RendererAttachments attachments(*window_);
+    attachments.Add(clear_renderer_);
+    for (const auto &layer : layers) {
+      layer.renderer->SetViewport(layer.viewport.data());
+      layer.renderer->SetLayer(0);
+      attachments.Add(layer.renderer);
     }
-    window_->RemoveRenderer(renderer);
+
+    const auto render_started = Clock::now();
+    window_->Render();
+    const auto render_finished = Clock::now();
+
+    CaptureWorldToClip(*layers[primary_layer].renderer, metrics);
+
+    vtkNew<vtkUnsignedCharArray> pixels;
+    const auto readback_started = Clock::now();
+    if (window_->GetRGBACharPixelData(0, 0, viewport.width - 1,
+                                      viewport.height - 1, 0, pixels) == 0) {
+      throw std::runtime_error("VTK framebuffer readback failed");
+    }
+    const auto expected_values =
+        static_cast<vtkIdType>(viewport.width) * viewport.height * 4;
+    if (pixels->GetNumberOfValues() < expected_values) {
+      throw std::runtime_error("VTK framebuffer readback was incomplete");
+    }
+    CopyRgbaBottomUpToFrame(pixels->GetPointer(0), viewport, frame);
+    const auto readback_finished = Clock::now();
+
+    metrics.surface_allocation_bytes = frame.capacity_bytes;
+    metrics.render_ms = Milliseconds(render_finished - render_started);
+    metrics.gpu_sync_wait_ms = 0.0;
+    metrics.cpu_readback_ms =
+        Milliseconds(readback_finished - readback_started);
   }
 
   vtkSmartPointer<vtkRenderWindow> window_;
+  vtkSmartPointer<vtkRenderer> clear_renderer_;
 };
 
 FrameCallbackFailure::FrameCallbackFailure(int32_t code, std::string message)
@@ -291,8 +330,9 @@ CallbackRenderTarget::CallbackRenderTarget(
 
 CallbackRenderTarget::~CallbackRenderTarget() = default;
 
-void CallbackRenderTarget::Render(vtkSmartPointer<vtkRenderer> renderer,
+void CallbackRenderTarget::Render(const std::vector<RenderLayer> &layers,
                                   const VtkFlutterViewport &viewport,
+                                  std::uint32_t primary_layer,
                                   VtkFlutterFrameMetrics &metrics) {
   VtkFlutterCpuFrame frame{};
   VtkFlutterStatus callback_status{};
@@ -302,7 +342,7 @@ void CallbackRenderTarget::Render(vtkSmartPointer<vtkRenderer> renderer,
 
   try {
     RequiredCapacity(viewport, frame);
-    impl_->Render(std::move(renderer), viewport, frame, metrics);
+    impl_->Render(layers, viewport, primary_layer, frame, metrics);
     callback_status = {};
     const auto submit_started = Clock::now();
     const auto end_code = callbacks_.end_frame(callbacks_.user_data, &metrics,

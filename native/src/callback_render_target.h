@@ -5,16 +5,23 @@
 
 #include <vtkSmartPointer.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 VTK_ABI_NAMESPACE_BEGIN
 class vtkRenderer;
 VTK_ABI_NAMESPACE_END
 
 namespace vtk_flutter {
+struct RenderLayer {
+  vtkSmartPointer<vtkRenderer> renderer;
+  std::array<double, 4> viewport;
+};
+
 class FrameCallbackFailure final : public std::runtime_error {
 public:
   FrameCallbackFailure(int32_t code, std::string message);
@@ -37,8 +44,8 @@ public:
   CallbackRenderTarget(const CallbackRenderTarget &) = delete;
   CallbackRenderTarget &operator=(const CallbackRenderTarget &) = delete;
 
-  void Render(vtkSmartPointer<vtkRenderer> renderer,
-              const VtkFlutterViewport &viewport,
+  void Render(const std::vector<RenderLayer> &layers,
+              const VtkFlutterViewport &viewport, std::uint32_t primary_layer,
               VtkFlutterFrameMetrics &metrics);
 
 private:

@@ -1,6 +1,7 @@
 part of 'vtk_api.dart';
 
 const int vtkMaximumImageBytes = 256 * 1024 * 1024;
+const int vtkMaximumRenderLayers = 64;
 const int _maximumInt32 = 0x7fffffff;
 const int _maximumExactJavaScriptInteger = 0x1fffffffffffff;
 
@@ -111,6 +112,84 @@ final class VtkViewport {
 
   @override
   int get hashCode => Object.hash(width, height);
+}
+
+final class VtkNormalizedViewport {
+  factory VtkNormalizedViewport({
+    required double left,
+    required double bottom,
+    required double right,
+    required double top,
+  }) {
+    _validateUnitInterval(value: left, field: 'left');
+    _validateUnitInterval(value: bottom, field: 'bottom');
+    _validateUnitInterval(value: right, field: 'right');
+    _validateUnitInterval(value: top, field: 'top');
+    if (left >= right) {
+      throw const VtkApiValidationException(
+        field: 'viewport',
+        message: 'Viewport left must be less than right',
+      );
+    }
+    if (bottom >= top) {
+      throw const VtkApiValidationException(
+        field: 'viewport',
+        message: 'Viewport bottom must be less than top',
+      );
+    }
+    return VtkNormalizedViewport._(
+      left: left,
+      bottom: bottom,
+      right: right,
+      top: top,
+    );
+  }
+
+  const VtkNormalizedViewport._({
+    required this.left,
+    required this.bottom,
+    required this.right,
+    required this.top,
+  });
+
+  static const full = VtkNormalizedViewport._(
+    left: 0,
+    bottom: 0,
+    right: 1,
+    top: 1,
+  );
+
+  final double left;
+  final double bottom;
+  final double right;
+  final double top;
+
+  @override
+  bool operator ==(Object other) =>
+      other is VtkNormalizedViewport &&
+      other.left == left &&
+      other.bottom == bottom &&
+      other.right == right &&
+      other.top == top;
+
+  @override
+  int get hashCode => Object.hash(left, bottom, right, top);
+}
+
+final class VtkRenderLayer {
+  const VtkRenderLayer({required this.renderer, required this.viewport});
+
+  final VtkRenderer renderer;
+  final VtkNormalizedViewport viewport;
+
+  @override
+  bool operator ==(Object other) =>
+      other is VtkRenderLayer &&
+      other.renderer == renderer &&
+      other.viewport == viewport;
+
+  @override
+  int get hashCode => Object.hash(renderer, viewport);
 }
 
 final class VtkDimensions {

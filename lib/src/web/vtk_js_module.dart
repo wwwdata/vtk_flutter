@@ -98,13 +98,48 @@ final class VtkJsModule implements VtkWebModule {
     required int renderer,
     required int width,
     required int height,
+  }) => renderLayout(
+    sessionId: sessionId,
+    layers: [
+      VtkWebRenderLayer(
+        renderer: renderer,
+        left: 0,
+        bottom: 0,
+        right: 1,
+        top: 1,
+      ),
+    ],
+    width: width,
+    height: height,
+    primaryLayer: 0,
+  );
+
+  @override
+  Future<VtkWebRenderFrame> renderLayout({
+    required int sessionId,
+    required List<VtkWebRenderLayer> layers,
+    required int width,
+    required int height,
+    required int primaryLayer,
   }) async {
     final module = await _loadModule();
     final result = await module
-        .render(
+        .renderLayout(
           sessionId.toJS,
-          renderer.toJS,
+          [
+            for (final layer in layers)
+              _VtkJsRenderLayer(
+                renderer: layer.renderer.toJS,
+                viewport: _VtkJsNormalizedViewport(
+                  left: layer.left.toJS,
+                  bottom: layer.bottom.toJS,
+                  right: layer.right.toJS,
+                  top: layer.top.toJS,
+                ),
+              ),
+          ].toJS,
           _VtkJsViewport(width: width.toJS, height: height.toJS),
+          primaryLayer.toJS,
         )
         .toDart;
     return VtkWebRenderFrame(
@@ -173,6 +208,13 @@ extension type _VtkJsExports(JSObject _) implements JSObject {
     _VtkJsViewport viewport,
   );
 
+  external JSPromise<_VtkJsRenderFrame> renderLayout(
+    JSNumber sessionId,
+    JSArray<_VtkJsRenderLayer> layers,
+    _VtkJsViewport viewport,
+    JSNumber primaryLayer,
+  );
+
   external JSPromise<JSAny?> closeSession(JSNumber sessionId);
 }
 
@@ -205,6 +247,22 @@ extension type _VtkJsViewport._(JSObject _) implements JSObject {
   external factory _VtkJsViewport({
     required JSNumber width,
     required JSNumber height,
+  });
+}
+
+extension type _VtkJsRenderLayer._(JSObject _) implements JSObject {
+  external factory _VtkJsRenderLayer({
+    required JSNumber renderer,
+    required _VtkJsNormalizedViewport viewport,
+  });
+}
+
+extension type _VtkJsNormalizedViewport._(JSObject _) implements JSObject {
+  external factory _VtkJsNormalizedViewport({
+    required JSNumber left,
+    required JSNumber bottom,
+    required JSNumber right,
+    required JSNumber top,
   });
 }
 
