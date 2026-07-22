@@ -668,6 +668,8 @@ void applyVtkCompileToolsTargetFix(Directory sourceDirectory) {
 }
 
 void applyVtkAndroidOffscreenEglFix(Directory sourceDirectory) {
+  // vtk_flutter presents native frames through an offscreen texture. Android
+  // window-surface rendering is intentionally outside this bootstrap contract.
   final cmakeFile = File(
     _join([sourceDirectory.path, 'Rendering', 'OpenGL2', 'CMakeLists.txt']),
   );
@@ -680,6 +682,15 @@ void applyVtkAndroidOffscreenEglFix(Directory sourceDirectory) {
       'vtkEGLRenderWindowInternals.cxx',
     ]),
   );
+  final defaultConfigFile = File(
+    _join([
+      sourceDirectory.path,
+      'Rendering',
+      'OpenGL2',
+      'Private',
+      'vtkEGLDefaultConfig.cxx',
+    ]),
+  );
   final renderWindowFile = File(
     _join([
       sourceDirectory.path,
@@ -688,7 +699,12 @@ void applyVtkAndroidOffscreenEglFix(Directory sourceDirectory) {
       'vtkEGLRenderWindow.cxx',
     ]),
   );
-  for (final file in [cmakeFile, internalsFile, renderWindowFile]) {
+  for (final file in [
+    cmakeFile,
+    internalsFile,
+    defaultConfigFile,
+    renderWindowFile,
+  ]) {
     if (!file.existsSync()) {
       throw StateError(
         '${file.path} is missing; cannot apply the VTK $vtkVersion '
@@ -738,6 +754,36 @@ void applyVtkAndroidOffscreenEglFix(Directory sourceDirectory) {
 ''',
   );
   _replacePinnedVtkSource(
+    file: defaultConfigFile,
+    description: 'Android OpenGL ES context version',
+    original: '''
+void vtkEGLDefaultConfig::CreateContext(EGLContext& context, EGLDisplay display, EGLConfig config)
+{
+#if VTK_OPENGL_USE_GLES
+  const EGLint attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+#else
+  const EGLint attribs[] = { EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 2, EGL_NONE };
+#endif
+
+  context = eglCreateContext(display, config, EGL_NO_CONTEXT, attribs);
+}
+''',
+    corrected: '''
+void vtkEGLDefaultConfig::CreateContext(EGLContext& context, EGLDisplay display, EGLConfig config)
+{
+#if defined(__ANDROID__) || defined(ANDROID)
+  const EGLint attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+#elif VTK_OPENGL_USE_GLES
+  const EGLint attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+#else
+  const EGLint attribs[] = { EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 2, EGL_NONE };
+#endif
+
+  context = eglCreateContext(display, config, EGL_NO_CONTEXT, attribs);
+}
+''',
+  );
+  _replacePinnedVtkSource(
     file: internalsFile,
     description: 'Android EGL configuration',
     original: '''
@@ -772,7 +818,7 @@ void applyVtkAndroidOffscreenEglFix(Directory sourceDirectory) {
   {
     surfaceType = EGL_PBUFFER_BIT;
 #if defined(__ANDROID__) || defined(ANDROID)
-    clientAPI = EGL_OPENGL_ES2_BIT;
+    clientAPI = EGL_OPENGL_ES3_BIT_KHR;
 #else
     clientAPI = EGL_OPENGL_BIT;
 #endif

@@ -312,6 +312,7 @@ void SetParentInfo() {
   group('applyVtkAndroidOffscreenEglFix', () {
     late Directory sourceDirectory;
     late File cmakeFile;
+    late File defaultConfigFile;
     late File internalsFile;
     late File renderWindowFile;
 
@@ -326,6 +327,12 @@ void SetParentInfo() {
         _path(
           _path(sourceDirectory.path, 'Rendering', 'OpenGL2', 'Private'),
           'vtkEGLRenderWindowInternals.cxx',
+        ),
+      )..createSync(recursive: true);
+      defaultConfigFile = File(
+        _path(
+          _path(sourceDirectory.path, 'Rendering', 'OpenGL2', 'Private'),
+          'vtkEGLDefaultConfig.cxx',
         ),
       )..createSync(recursive: true);
       renderWindowFile = File(
@@ -367,6 +374,18 @@ void SetParentInfo() {
     surfaceType = EGL_PBUFFER_BIT;
     clientAPI = EGL_OPENGL_BIT;
   }
+''');
+      defaultConfigFile.writeAsStringSync('''
+void vtkEGLDefaultConfig::CreateContext(EGLContext& context, EGLDisplay display, EGLConfig config)
+{
+#if VTK_OPENGL_USE_GLES
+  const EGLint attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+#else
+  const EGLint attribs[] = { EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 2, EGL_NONE };
+#endif
+
+  context = eglCreateContext(display, config, EGL_NO_CONTEXT, attribs);
+}
 ''');
       renderWindowFile.writeAsStringSync('''
   if (val)
@@ -413,11 +432,15 @@ void SetParentInfo() {
       );
       expect(internals, contains('#include "Private/vtkEGLDefaultConfig.h"'));
       expect(internals, contains('surfaceType = EGL_PBUFFER_BIT;'));
-      expect(internals, contains('clientAPI = EGL_OPENGL_ES2_BIT;'));
+      expect(internals, contains('clientAPI = EGL_OPENGL_ES3_BIT_KHR;'));
       expect(
-        renderWindowFile.readAsStringSync(),
-        isNot(contains('fallback to onscreen rendering')),
+        defaultConfigFile.readAsStringSync(),
+        contains('EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE'),
       );
+      final renderWindow = renderWindowFile.readAsStringSync();
+      expect(renderWindow, contains('fallback to offscreen rendering'));
+      expect(renderWindow, contains('val = false;'));
+      expect(renderWindow, isNot(contains('fallback to onscreen rendering')));
     });
 
     test('rejects source contents outside the pinned patch contract', () {
