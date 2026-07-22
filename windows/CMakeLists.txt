@@ -85,8 +85,17 @@ if(include_${PROJECT_NAME}_tests)
       "$<TARGET_FILE_DIR:${TEST_RUNNER}>"
   )
 
-  add_test(NAME ${TEST_RUNNER} COMMAND $<TARGET_FILE:${TEST_RUNNER}>)
-  set_tests_properties(${TEST_RUNNER} PROPERTIES
-    WORKING_DIRECTORY "$<TARGET_FILE_DIR:${TEST_RUNNER}>"
-  )
+add_test(NAME ${TEST_RUNNER} COMMAND $<TARGET_FILE:${TEST_RUNNER}>)
+set_tests_properties(${TEST_RUNNER} PROPERTIES
+  WORKING_DIRECTORY "$<TARGET_FILE_DIR:${TEST_RUNNER}>"
+)
+
+add_test(
+  NAME ${TEST_RUNNER}_rollback_only
+  COMMAND $<TARGET_FILE:${TEST_RUNNER}>
+          --gtest_filter=VtkFlutterPlugin.RetainsIncompleteCreationForRollbackRetry
+)
+set_tests_properties(${TEST_RUNNER}_rollback_only PROPERTIES
+  WORKING_DIRECTORY "$<TARGET_FILE_DIR:${TEST_RUNNER}>"
+)
 endif()

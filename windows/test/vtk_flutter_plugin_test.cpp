@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -761,6 +762,7 @@ TEST(VtkFlutterPlugin, KeepsOtherSessionsUsableAcrossRetryableCleanupFailures) {
 }
 
 TEST(VtkFlutterPlugin, RetainsIncompleteCreationForRollbackRetry) {
+  std::fprintf(stderr, "[DEBUG-windows-rollback] begin\n");
   ResetFakePresentation();
   {
     auto host = std::make_unique<FakeViewHost>();
@@ -776,24 +778,32 @@ TEST(VtkFlutterPlugin, RetainsIncompleteCreationForRollbackRetry) {
     gDetachFailuresRemaining = 1;
 
     MethodResponse failed_create;
+    std::fprintf(stderr, "[DEBUG-windows-rollback] before failed create\n");
     Invoke(plugin, "createView", view_arguments, failed_create);
+    std::fprintf(stderr, "[DEBUG-windows-rollback] after failed create\n");
     EXPECT_TRUE(failed_create.completed);
     EXPECT_EQ(failed_create.error_code, "vtk_internal_error");
     ASSERT_EQ(gTargets.size(), 1U);
     EXPECT_EQ(gTargets[0]->session, session);
 
     MethodResponse blocked_create;
+    std::fprintf(stderr, "[DEBUG-windows-rollback] before blocked create\n");
     Invoke(plugin, "createView", view_arguments, blocked_create);
+    std::fprintf(stderr, "[DEBUG-windows-rollback] after blocked create\n");
     EXPECT_TRUE(blocked_create.completed);
     EXPECT_EQ(blocked_create.error_code, "invalid_state");
 
     MethodResponse cleanup_retry;
+    std::fprintf(stderr, "[DEBUG-windows-rollback] before cleanup retry\n");
     Invoke(plugin, "disposeView", session_arguments, cleanup_retry);
+    std::fprintf(stderr, "[DEBUG-windows-rollback] after cleanup retry\n");
     EXPECT_TRUE(cleanup_retry.completed);
     EXPECT_TRUE(cleanup_retry.error_code.empty());
 
     MethodResponse successful_create;
+    std::fprintf(stderr, "[DEBUG-windows-rollback] before successful create\n");
     Invoke(plugin, "createView", view_arguments, successful_create);
+    std::fprintf(stderr, "[DEBUG-windows-rollback] after successful create\n");
     EXPECT_TRUE(successful_create.completed);
     EXPECT_TRUE(successful_create.error_code.empty());
     EXPECT_EQ(std::get<std::int64_t>(
@@ -801,10 +811,14 @@ TEST(VtkFlutterPlugin, RetainsIncompleteCreationForRollbackRetry) {
               1);
 
     MethodResponse dispose;
+    std::fprintf(stderr, "[DEBUG-windows-rollback] before final dispose\n");
     Invoke(plugin, "disposeView", session_arguments, dispose);
+    std::fprintf(stderr, "[DEBUG-windows-rollback] after final dispose\n");
     EXPECT_TRUE(dispose.completed);
   }
+  std::fprintf(stderr, "[DEBUG-windows-rollback] before reset\n");
   ResetFakePresentation();
+  std::fprintf(stderr, "[DEBUG-windows-rollback] end\n");
 }
 
 TEST(VtkFlutterPlugin, RestoresTextureStateWhenUnregistrationCannotStart) {
