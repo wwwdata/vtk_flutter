@@ -355,8 +355,10 @@ jobs:
           disable-animations: true
           script: >-
             cd example &&
-            flutter test integration_test/renderer_lab_test.dart
+            flutter drive
             -d emulator-5554
+            --driver test_driver/integration_test.dart
+            --target integration_test/renderer_lab_test.dart
 
   windows-consumer:
     name: Windows x64 consumer smoke
