@@ -353,23 +353,7 @@ jobs:
           arch: x86_64
           target: google_apis
           disable-animations: true
-          script: |
-            cd example
-            adb logcat -c
-            adb logcat -v threadtime > "$RUNNER_TEMP/vtk-flutter-android-logcat.txt" &
-            logcat_pid=$!
-            set +e
-            flutter drive \
-              -d emulator-5554 \
-              --driver test_driver/integration_test.dart \
-              --target integration_test/renderer_lab_test.dart
-            test_status=$?
-            kill "$logcat_pid" 2>/dev/null
-            wait "$logcat_pid" 2>/dev/null
-            if [ "$test_status" -ne 0 ]; then
-              tail -n 2000 "$RUNNER_TEMP/vtk-flutter-android-logcat.txt"
-            fi
-            exit "$test_status"
+          script: bash .github/scripts/run-android-integration.sh
 
   windows-consumer:
     name: Windows x64 consumer smoke
