@@ -26,8 +26,58 @@ const maximumImageBytes = 256 * 1024 * 1024;
 const maximumRenderLayers = 64;
 const captureTimeoutMilliseconds = 15_000;
 
-export const createFlyingEdges3D = () =>
-  vtkImageMarchingCubes.newInstance({ mergePoints: true });
+const transformMarchingCubesOutput = (input, output) => {
+  const origin = input.getOrigin();
+  const spacing = input.getSpacing();
+  const points = output.getPoints();
+  const coordinates = points.getData();
+  const index = [0, 0, 0];
+  const world = [0, 0, 0];
+  for (let offset = 0; offset < coordinates.length; offset += 3) {
+    for (let axis = 0; axis < 3; axis++) {
+      index[axis] = (coordinates[offset + axis] - origin[axis]) / spacing[axis];
+    }
+    input.indexToWorld(index, world);
+    coordinates.set(world, offset);
+  }
+  points.modified();
+
+  const normals = output.getPointData().getNormals();
+  if (!normals) return;
+  const direction = input.getDirection();
+  const vectors = normals.getData();
+  for (let offset = 0; offset < vectors.length; offset += 3) {
+    const x = vectors[offset];
+    const y = vectors[offset + 1];
+    const z = vectors[offset + 2];
+    const transformed = [
+      direction[0] * x + direction[3] * y + direction[6] * z,
+      direction[1] * x + direction[4] * y + direction[7] * z,
+      direction[2] * x + direction[5] * y + direction[8] * z,
+    ];
+    const length = Math.hypot(...transformed);
+    if (length > 0) {
+      vectors[offset] = transformed[0] / length;
+      vectors[offset + 1] = transformed[1] / length;
+      vectors[offset + 2] = transformed[2] / length;
+    }
+  }
+  normals.modified();
+};
+
+export const createFlyingEdges3D = () => {
+  const contour = {};
+  const model = {};
+  vtkImageMarchingCubes.extend(contour, model, { mergePoints: true });
+  const requestData = contour.requestData;
+  contour.requestData = (inData, outData) => {
+    requestData(inData, outData);
+    if (inData[0] && outData[0]) {
+      transformMarchingCubesOutput(inData[0], outData[0]);
+    }
+  };
+  return Object.freeze(contour);
+};
 
 const supportedObjectTypes = Object.freeze([
   'imageData',
@@ -340,7 +390,7 @@ const validateImageInput = (input) => {
   };
 };
 
-const createScalarImage = (input) => {
+export const createScalarImage = (input) => {
   const validated = validateImageInput(input);
   const bytes = new Uint8Array(input.bytes);
   const values = new validated.ScalarArray(
@@ -352,7 +402,17 @@ const createScalarImage = (input) => {
   image.setDimensions(...validated.dimensions);
   image.setOrigin(...validated.origin);
   image.setSpacing(...validated.spacing);
-  image.setDirection(...validated.direction);
+  image.setDirection(
+    validated.direction[0],
+    validated.direction[3],
+    validated.direction[6],
+    validated.direction[1],
+    validated.direction[4],
+    validated.direction[7],
+    validated.direction[2],
+    validated.direction[5],
+    validated.direction[8],
+  );
   image.getPointData().setScalars(
     vtkDataArray.newInstance({
       name: 'Scalars',

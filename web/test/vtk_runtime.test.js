@@ -14,6 +14,7 @@ const {
   createImageData,
   createObject,
   createRenderTarget,
+  createScalarImage,
   destroyObject,
   getCapabilities,
   invoke,
@@ -161,6 +162,51 @@ test('merges contour points for connected-region extraction', () => {
     assert.equal(contour.getMergePoints(), true);
   } finally {
     contour.delete();
+  }
+});
+
+test('places contour vertices using the row-major image direction', () => {
+  const image = createScalarImage({
+    bytes: new Uint8Array(
+      new Float32Array([-1, 1, -1, 1, -1, 1, -1, 1]).buffer,
+    ),
+    scalarType: 'float32',
+    dimensions: [2, 2, 2],
+    componentCount: 1,
+    origin: [10, 20, 30],
+    spacing: [2, 3, 5],
+    direction: [0, 0, 1, 1, 0, 0, 0, 1, 0],
+  });
+  const contour = createFlyingEdges3D();
+  try {
+    contour.setInputData(image);
+    contour.setContourValue(0);
+    contour.update();
+
+    const coordinates = Array.from(
+      contour.getOutputData().getPoints().getData(),
+    );
+    const vertices = [];
+    for (let index = 0; index < coordinates.length; index += 3) {
+      vertices.push(coordinates.slice(index, index + 3));
+    }
+    vertices.sort((first, second) => {
+      for (let axis = 0; axis < 3; axis++) {
+        const difference = first[axis] - second[axis];
+        if (difference !== 0) return difference;
+      }
+      return 0;
+    });
+
+    assert.deepEqual(vertices, [
+      [10, 21, 30],
+      [10, 21, 33],
+      [15, 21, 30],
+      [15, 21, 33],
+    ]);
+  } finally {
+    contour.delete();
+    image.delete();
   }
 });
 
